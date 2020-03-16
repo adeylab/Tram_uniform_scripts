@@ -280,7 +280,7 @@ dev.off()
 
 
 
-#we need to select for singlets and ones that represent on type of cell then pool2 and merge
+#we need to select for singlets and ones that represent on type of cell then pool2 and merge after
 
 # First, we will remove negative cells from the object
 pool2.hashtag.subset <- subset(pool2.hashtag, idents = "Negative", invert = TRUE)
