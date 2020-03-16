@@ -1,0 +1,1009 @@
+---
+title: "After integration ptime analysis"
+output: html_notebook
+---
+
+After integration and ptime ordering
+```{r}
+library(monocle)
+library(Seurat)
+library(cisTopic)
+library(stringr)
+library(ComplexHeatmap)
+library(ggpubr)
+library(ggplot2)
+library(bedr)
+library(ggthemes)
+library(data.table)
+library(BBmisc)
+library(gridExtra)
+
+#read coembeded cds
+coembed_cds <- readRDS(file="coembed_monocle3_res.rds")
+pseudotime<-as.data.frame(pData(coembed_cds)$Pseudotime)
+row.names(pseudotime)<-row.names(pData(coembed_cds))
+names(pseudotime)<-"pseudotime"
+pseudotime$annot<-pData(coembed_cds)$annot
+pseudotime$cell<-pData(coembed_cds)$cell_coor
+pseudotime$tech<-pData(coembed_cds)$tech
+
+ptime_1143G<-pseudotime[which(pseudotime$cell=="HCC1143G"),]
+ptime_1143S<-pseudotime[which(pseudotime$cell=="HCC1143S"),]
+ptime_1806<-pseudotime[which(pseudotime$cell=="HCC1806"),]
+ptime_MDA<-pseudotime[which(pseudotime$cell=="MDA"),]
+ptime_SUM<-pseudotime[which(pseudotime$cell=="SUM"),]
+
+ptime_1143G$ptime<-ptime_1143G$pseudotime
+ptime_1143S$ptime<-ptime_1143S$pseudotime+max(pseudotime[which(pseudotime$cell=="HCC1143G"),1])+1
+ptime_1806$ptime<-ptime_1806$pseudotime+max(ptime_1143S$ptime)+1
+ptime_MDA$ptime<-ptime_MDA$pseudotime+max(ptime_1806$ptime)+1
+ptime_SUM$ptime<-ptime_SUM$pseudotime+max(ptime_MDA$ptime)+1
+ptime<-rbind(ptime_1143G,ptime_1143S,ptime_1806,ptime_MDA,ptime_SUM)
+
+cisTopicObject <-readRDS(file="Finetune_continued_analysis.rds")
+all.rna<-readRDS("scRNA_singlet_filt.rds")
+
+DefaultAssay(all.rna) <- "RNA"
+#if you want standard norm do it with
+#DefaultAssay(all.rna) <- "SCT"
+all.rna$tech <- "rna"
+#In case I need to use is with scTransform but the standard normalization
+all.rna <- ScaleData(all.rna, vars.to.regress = "percent.mt")
+# These are now standard steps in the Seurat workflow for visualization and clustering
+all.rna<- RunPCA(all.rna, verbose = FALSE)
+pred.matrix <- as.matrix(predictiveDistribution(cisTopicObject))
+pred.df<-as.data.frame(pred.matrix)
+colnames(pred.df)<-cisTopicObject@cell.names
+
+#annot_atac<-read.table("./180227_180214.U54.merged_new.annot",header=F)
+
+
+cicero<-read.table("cicero.output.txt",header = T)
+
+#grab all promoters in list of genes that are DE between Tram and DMSO
+library(bedr)
+all_peaks_sort<-bedr.sort.region(row.names(cisTopicObject@region.data))
+
+```
+
+
+Define a plotting fuction along ptime
+```{r}
+#give "gene name"", method=("aggregate" or "IND") and "select_sites" a vector of sites if you want to print them out
+plot_rna_atac_access<-function(gene_name,method,select_sites,only_changing_cl=FALSE)
+{
+stopifnot(exists("gene_name"))  
+stopifnot(exists("method"))
+regions<-cisTopicObject@region.data[which(cisTopicObject@region.data$SYMBOL==paste0(gene_name)),]
+promoter_us=regions[which(regions$distanceToTSS<5000 & regions$distanceToTSS > -1),]
+#promoter<-gsub("-","_",gsub(":","_",row.names(Vimp)))
+peak1_us<-paste0(str_split_fixed(cicero$Peak1,"_",3)[,1],":",str_split_fixed(cicero$Peak1,"_",3)[,2],"-",str_split_fixed(cicero$Peak1,"_",3)[,3]) 
+peak1_sort<-bedr.sort.region(peak1_us)
+promoter_sort<-bedr.sort.region(row.names(promoter_us))
+combined_promoter<-bedr(input = list(a = peak1_sort, b = promoter_sort), method="intersect",params ="-wa -sorted");
+
+#get all connected regions
+all_connected_regions<-cicero[peak1_us==unique(combined_promoter),]
+
+#select regions coaccess>abs(0.15) or 0.15>
+all_connected_regions_select_order<-na.omit(all_connected_regions[abs(all_connected_regions$coaccess)>0.15,])
+#if you just want positive correlations
+#all_connected_regions_select_order<-na.omit(all_connected_regions[all_connected_regions$coaccess>0.15,])
+all_connected_regions_select<-all_connected_regions_select_order
+
+#all_connected_regions_select_order<-all_connected_regions_select[order(all_connected_regions_select$coaccess, decreasing = T),]
+#get peak info from cistopic
+peaks_chosen<-as.character(all_connected_regions_select_order$Peak2)
+peaks_chosen_mod<-paste0(str_split_fixed(peaks_chosen,"_",3)[,1],":",str_split_fixed(peaks_chosen,"_",3)[,2],"-",str_split_fixed(peaks_chosen,"_",3)[,3]) 
+
+#sort these
+bedr.sort.region_srt<-bedr.sort.region(peaks_chosen_mod)
+bedr.sort.region<-bedr.sort.region_srt
+
+#now that we have enchancer combine
+combined_enhancer<-bedr(input = list(a = all_peaks_sort, b = peaks_chosen_mod), method="intersect",params ="-wa -wb -sorted");
+all_connected_regions_select_order<-all_connected_regions_select[order(all_connected_regions_select$coaccess, decreasing = T),]
+
+enhancers<-data.frame(com_peak=paste(combined_enhancer$V4,combined_enhancer$V5,combined_enhancer$V6,sep="_"),peak=combined_enhancer$index)
+promoter_link<-data.frame(com_peak=all_connected_regions_select_order$Peak2,coaccess=all_connected_regions_select_order$coaccess)
+
+enhancers_ordered<-merge(promoter_link,enhancers,by="com_peak",no.dups=F)
+
+#make a data frame of regions, annot, distTSS
+#first promoter then enhancers
+query_regions<-rbind(data.frame(peak=row.names(promoter_us),com_peak=rep(unique(combined_promoter),times=length(row.names(promoter_us))),coaccess=rep(1,times=length(row.names(promoter_us)))),enhancers_ordered)
+
+#first just use annotated regions
+atac_pred<-pred.df[match(query_regions$peak,row.names(pred.df)),]
+
+#now average these based on comb peak
+atac_pred_rename<-atac_pred
+atac_pred_merged<-merge(query_regions,atac_pred_rename,by.x="peak",by.y="row.names")
+atac_pred_merged_short<-atac_pred_merged
+atac_pred_merged_short$peak<-NULL
+atac_pred_merged_short$com_peak<-NULL
+atac_pred_aggr<-aggregate.data.frame(atac_pred_merged_short,by=list(com_peak=atac_pred_merged$com_peak),FUN=mean)
+#or average based on com_regions
+row.names(atac_pred_aggr)<-paste(atac_pred_aggr$com_peak,format(atac_pred_aggr$coaccess,digits=1,nsmall=4),sep="_CA_")
+atac_pred_aggr<-atac_pred_aggr[order(atac_pred_aggr$coaccess, decreasing = T),]
+atac_pred_aggr$com_peak<-NULL
+atac_pred_aggr$coaccess<-NULL
+#get expression data
+rna_sc<-FetchData(object = all.rna,slot="scale.data", vars = c(paste0(gene_name)))
+
+#order by ptime you can do individual vs aggregate
+ptime_rna<-merge(ptime[which(ptime$tech=="rna"),],rna_sc,by="row.names")
+
+if(method=="IND")
+{
+pval_atac<-merge(ptime[which(ptime$tech=="atac"),],t(atac_pred),by="row.names")
+} else
+{
+pval_atac<-merge(ptime[which(ptime$tech=="atac"),],t(atac_pred_aggr),by="row.names")
+}
+
+#change name
+names(pval_atac)<-gsub(":","_",names(pval_atac))
+names(pval_atac)<-gsub("-","_",names(pval_atac))
+names(pval_atac)<-gsub(" ","",names(pval_atac))
+ptime_rna$annot<-gsub("Trametinib","Tram",ptime_rna$annot)
+ptime_rna$annot<-gsub("HCCMDAMB468","MDA",ptime_rna$annot)
+ptime_rna$annot<-gsub("SUM149PT","SUM",ptime_rna$annot)
+ptime_rna$treatment<-str_split_fixed(ptime_rna$annot,"_",2)[,2]
+ptime_rna$cell_corr<-paste0(ptime_rna$cell,"_",ptime_rna$treatment)
+pval_atac$treatment<-str_split_fixed(pval_atac$annot,"_",2)[,2]
+pval_atac$cell_corr<-paste0(pval_atac$cell,"_",pval_atac$treatment)
+
+#if only present in sct change name
+if(str_detect(names(ptime_rna)[7], "sct")) {
+gene_name=names(ptime_rna)[7]
+print(gene_name) }
+
+p<-ggplot(ptime_rna,aes_string(x="ptime",y=paste0(gene_name)))+geom_point(aes(color=cell_corr))+geom_smooth(aes(color=cell))+theme_bw()+theme_classic()
+p<-p+ylab("Norm gene expression")+xlab("")+ scale_colour_manual(values = c("HCC1143G" = "#8c510a","HCC1143G_DMSO" = "#8c510a","HCC1143G_Tram" = "#bf812d","HCC1143S_DMSO" = "#dfc27d","HCC1143S" = "#dfc27d","HCC1143S_Tram" = "#f6e8c3","HCC1806_DMSO" = "#4d9221","HCC1806" = "#4d9221","HCC1806_Tram" = "#c7e9b4","MDA_DMSO" = "#35978f","MDA" = "#35978f","MDA_Tram" = "#41b6c4","SUM_DMSO" = "#c51b7d","SUM" = "#c51b7d","SUM_Tram" = "#de77ae")) + theme(legend.position="none",text =element_text(size = 6),plot.title = element_text(size=6),axis.title.y = element_text(size=6),axis.title.x = element_blank())
+myplots<-list()
+myplots[[paste0(gene_name)]]<-p
+sites<-names(pval_atac)[grep("^chr",perl=T,names(pval_atac))]
+for ( i in sites) {
+#for ( i in names(pval_atac)[7:14]) {
+  myplots[[i]] <-  ggplot(pval_atac,aes_string(x="ptime",y=i))+ylab("Mean probability of site usage")+ggtitle(paste0(i))+geom_point(aes(color=cell_corr))+theme_bw()+geom_smooth(aes(color=cell))+  scale_colour_manual(values = c("HCC1143G" = "#99000d","HCC1143G_DMSO" = "#99000d","HCC1143G_Tram" = "#fcbba1","HCC1143S_DMSO" = "#e66101","HCC1143S" = "#e66101","HCC1143S_Tram" = "#fdb863","HCC1806_DMSO" = "#006d2c","HCC1806" = "#006d2c","HCC1806_Tram" = "#74c476","MDA_DMSO" = "#045a8d","MDA" = "#045a8d","MDA_Tram" = "#a6bddb","SUM_DMSO" = "#810f7c","SUM" = "#810f7c","SUM_Tram" = "#8c6bb1"))+theme_classic() + theme(legend.position="none",text =element_text(size = 6),plot.title = element_text(size=6),axis.title.y = element_text(size=6),axis.title.x = element_blank())
+  }
+figure <- ggarrange(plotlist=myplots, ncol = 1, nrow = length(myplots),align = "v")
+#ggsave(plot=figure,file="check.pdf",height=20,width=10)
+ggsave(plot=figure,file=paste0(gene_name,"_expression_vs_accessibilty_classic_sites_2.pdf"),height=10,width=20)
+ggsave(plot=figure,file=paste0(gene_name,"_expression_vs_accessibilty_clsassic_sites.png"),height=16.5,width=16.5,dpi = 600,units = "cm")
+
+figure <- marrangeGrob(myplots, nrow=4, ncol=2)
+#ggsave(plot=figure,file="check.pdf",height=20,width=10)
+ggsave(plot=figure,file=paste0("./",gene_name,"_expression_vs_accessibilty_sites_large.pdf"),height=10,width=20)
+p<-ggplot(ptime_rna,aes_string(x="ptime",y=paste0(gene_name)))+geom_point(aes(color=cell_corr))+geom_smooth(aes(color=cell))+theme_bw()+theme_classic()
+p<-p+ylab("Norm gene expression")+xlab("")+ scale_colour_manual(values = c("HCC1143G" = "#8c510a","HCC1143G_DMSO" = "#8c510a","HCC1143G_Tram" = "#bf812d","HCC1143S_DMSO" = "#dfc27d","HCC1143S" = "#dfc27d","HCC1143S_Tram" = "#f6e8c3","HCC1806_DMSO" = "#4d9221","HCC1806" = "#4d9221","HCC1806_Tram" = "#c7e9b4","MDA_DMSO" = "#35978f","MDA" = "#35978f","MDA_Tram" = "#41b6c4","SUM_DMSO" = "#c51b7d","SUM" = "#c51b7d","SUM_Tram" = "#de77ae")) + theme(legend.position="none",text =element_text(size = 6),plot.title = element_text(size=6),axis.title.y = element_text(size=6),axis.title.x = element_blank())
+myplots<-list()
+myplots[[paste0(gene_name)]]<-p
+#examples used in paper
+#sites_select<-c("chr16_54284204_54287263_CA_1.0000","chr16_54422593_54432794_CA_0.8077")
+#sites_select<-c("chr4_74408574_74456871_CA_1.0000","chr4_74056644_74057179_CA_0.8377")
+#sites_select=c("chr14_69242453_69242953_CA_0.1531")
+if(exists("select_sites"))
+{
+for ( i in select_sites) {
+  #for ( i in names(pval_atac)[7:14]) {
+  #pval_atac[pval_atac$cell=="SUM",
+  myplots[[i]] <-  ggplot(pval_atac,aes_string(x="ptime",y=i))+ylab("Mean probability of site usage")+ggtitle(paste0(i))+geom_point(aes(color=cell_corr))+theme_bw()+geom_smooth(aes(color=cell))+  scale_colour_manual(values = c("HCC1143G" = "#99000d","HCC1143G_DMSO" = "#99000d","HCC1143G_Tram" = "#fcbba1","HCC1143S_DMSO" = "#e66101","HCC1143S" = "#e66101","HCC1143S_Tram" = "#fdb863","HCC1806_DMSO" = "#006d2c","HCC1806" = "#006d2c","HCC1806_Tram" = "#74c476","MDA_DMSO" = "#045a8d","MDA" = "#045a8d","MDA_Tram" = "#a6bddb","SUM_DMSO" = "#810f7c","SUM" = "#810f7c","SUM_Tram" = "#8c6bb1"))+theme_classic() + theme(legend.position="none",text =element_text(size = 6),plot.title = element_text(size=6),axis.title.y = element_text(size=6),axis.title.x = element_blank())
+}
+figure <- ggarrange(plotlist=myplots, ncol = 1, nrow = length(myplots),align = "v")
+ggsave(plot=figure,file=paste0(gene_name,"_expression_vs_accessibilty_clsassic_select_sites.png"),height=6,width=18,dpi = 600,units = "cm")
+ggsave(plot=figure,file=paste0(gene_name,"_expression_vs_accessibilty_clsassic_select_sites.pdf"),height=6,width=18,units = "cm")
+}
+}
+```
+
+
+Same idea but instead of plotting it calculates the correlation allong the treatment curve
+```{r}
+corr_rna_atac_access<-function(gene_name,method)
+{
+  print(paste0("Analizing ",gene_name))
+  regions<-cisTopicObject@region.data[which(cisTopicObject@region.data$SYMBOL==paste0(gene_name)),]
+  promoter_us=regions[which(regions$distanceToTSS<1000 & regions$distanceToTSS > -1),]
+  
+  if(dim(regions)[1]==0)
+  {
+  print(paste0("No annotated sites in Cistopic for ",gene_name))
+  return(data.frame(site=NA,pval=NA,log2fold=NA,celline=NA,gene=gene_name,corr_sp=NA,coaccess=NA))  
+  }
+  else
+  {
+  if(dim(promoter_us)[1]==0)
+  {
+    print(paste0("Annotated site in Cistopic is not promoter, will just use this region: ",gene_name))
+    promoter_sort<-bedr.sort.region(row.names(regions))
+    query_regions<-data.frame(peak=promoter_sort,com_peak=promoter_sort,coaccess=rep(NA,times=length(promoter_sort)))
+  
+  }
+  else
+  {
+  peak1_us<-paste0(str_split_fixed(cicero$Peak1,"_",3)[,1],":",str_split_fixed(cicero$Peak1,"_",3)[,2],"-",str_split_fixed(cicero$Peak1,"_",3)[,3]) 
+  peak1_sort<-bedr.sort.region(peak1_us)
+  promoter_sort<-bedr.sort.region(row.names(promoter_us))
+  combined_promoter<-bedr(input = list(a = peak1_sort, b = promoter_sort), method="intersect",params ="-wa -sorted");
+  
+  #get all connected regions
+  all_connected_regions<-cicero[peak1_us==unique(combined_promoter),]
+  
+  #select regions coaccess>abs(0.15)
+  #all_connected_regions_select_order<-na.omit(all_connected_regions[abs(all_connected_regions$coaccess)>0.15,])
+  #for coaccess corr analysis do approx 0 here
+  #select regions that are not necessarily coaccessible
+  all_connected_regions_select_order<-na.omit(all_connected_regions[abs(all_connected_regions$coaccess)>0.001,])
+  all_connected_regions_select<-all_connected_regions_select_order
+  
+  #all_connected_regions_select_order<-all_connected_regions_select[order(all_connected_regions_select$coaccess, decreasing = T),]
+  #get peak info from cistopic
+  if(dim(all_connected_regions_select)[1]==0)
+  {
+    print(paste0("Annotated sites linked by cicero do not pass threshold for: ",gene_name))
+    query_regions<-data.frame(peak=promoter_sort,com_peak=promoter_sort,coaccess=rep(1,times=length(promoter_sort)))
+  }
+  else
+  {
+  peaks_chosen<-as.character(all_connected_regions_select_order$Peak2)
+  peaks_chosen_mod<-paste0(str_split_fixed(peaks_chosen,"_",3)[,1],":",str_split_fixed(peaks_chosen,"_",3)[,2],"-",str_split_fixed(peaks_chosen,"_",3)[,3]) 
+  #sort these
+  bedr.sort.region_srt<-bedr.sort.region(peaks_chosen_mod)
+  peaks_chosen_mod<-bedr.sort.region_srt
+  
+  
+  #now that we have enchancer combined
+  combined_enhancer<-bedr(input = list(a = all_peaks_sort, b = peaks_chosen_mod), method="intersect",params ="-wa -wb -sorted");
+  all_connected_regions_select_order<-all_connected_regions_select[order(all_connected_regions_select$coaccess, decreasing = T),]
+  
+  enhancers<-data.frame(com_peak=paste(combined_enhancer$V4,combined_enhancer$V5,combined_enhancer$V6,sep="_"),peak=combined_enhancer$index)
+  promoter_link<-data.frame(com_peak=all_connected_regions_select_order$Peak2,coaccess=all_connected_regions_select_order$coaccess)
+  
+  enhancers_ordered<-merge(promoter_link,enhancers,by="com_peak",no.dups=F)
+  
+  #make a data frame of regions, annot, distTSS
+  #first promoter then enhancers
+  query_regions<-rbind(data.frame(peak=row.names(promoter_us),com_peak=rep(unique(combined_promoter),times=length(row.names(promoter_us))),coaccess=rep(1,times=length(row.names(promoter_us)))),enhancers_ordered)
+  }
+  }
+  #first just use annotated regions
+  atac_pred<-pred.df[match(query_regions$peak,row.names(pred.df)),]
+  
+  #now average these based on comb peak
+  atac_pred_rename<-atac_pred
+  atac_pred_merged<-merge(query_regions,atac_pred_rename,by.x="peak",by.y="row.names")
+  atac_pred_merged_short<-atac_pred_merged
+  atac_pred_merged_short$peak<-NULL
+  atac_pred_merged_short$com_peak<-NULL
+  atac_pred_aggr<-aggregate.data.frame(atac_pred_merged_short,by=list(com_peak=atac_pred_merged$com_peak),FUN=mean)
+  #or average based on com_regions
+  row.names(atac_pred_aggr)<-paste(atac_pred_aggr$com_peak,format(atac_pred_aggr$coaccess,digits=1,nsmall=4),sep="_CA_")
+  atac_pred_aggr<-atac_pred_aggr[order(atac_pred_aggr$coaccess, decreasing = T),]
+  atac_pred_aggr$com_peak<-NULL
+  atac_pred_aggr$coaccess<-NULL
+  #get expression data
+  if(gene_name %in% row.names(GetAssayData(object = all.rna,slot="scale.data")) == "FALSE")
+  {
+  print(paste0("No annotated sites in scRNA for ",gene_name))
+  return(data.frame(site=NA,pval=NA,log2fold=NA,celline=NA,gene=gene_name,corr_sp=NA,coaccess=NA))  
+  }
+  else
+  {
+  #this could be scTransform as well but we used scale data because that was used for integration
+  rna_sc<-FetchData(object = all.rna,slot="scale.data", vars = c(paste0(gene_name)))
+  #order by ptime you can do individual vs aggregate
+  ptime_rna<-merge(ptime[which(ptime$tech=="rna"),],rna_sc,by="row.names")
+  if(method=="IND")
+  {
+    pval_atac<-merge(ptime[which(ptime$tech=="atac"),],t(atac_pred),by="row.names")
+  } else
+  {
+    pval_atac<-merge(ptime[which(ptime$tech=="atac"),],t(atac_pred_aggr),by="row.names")
+  }
+  
+  #change name
+  names(pval_atac)<-gsub(":","_",names(pval_atac))
+  
+  #names(pval_atac)<-gsub("-","_",names(pval_atac))
+  names(pval_atac)<-gsub(" ","",names(pval_atac))
+  ptime_rna$annot<-gsub("Trametinib","Tram",ptime_rna$annot)
+  ptime_rna$annot<-gsub("HCCMDAMB468","MDA",ptime_rna$annot)
+  ptime_rna$annot<-gsub("SUM149PT","SUM",ptime_rna$annot)
+  ptime_rna$treatment<-str_split_fixed(ptime_rna$annot,"_",2)[,2]
+  ptime_rna$cell_corr<-paste0(ptime_rna$cell,"_",ptime_rna$treatment)
+  pval_atac$treatment<-str_split_fixed(pval_atac$annot,"_",2)[,2]
+  pval_atac$cell_corr<-paste0(pval_atac$cell,"_",pval_atac$treatment)
+  
+  #smooth along pcurve so we can use matched values to correlate
+  smoothing_parameter=200
+  test_result<-data.frame(site=character(),pval=double(),log2fold=double(),celline=character(),gene=character(),corr_sp=double())
+  sites<-names(pval_atac)[grep("^chr",perl=T,names(pval_atac))]
+  for (celline in levels(as.factor(pval_atac$cell)))
+       {
+    expr_rna=ptime_rna[celline==ptime_rna$cell,paste0(gene_name)]
+    time_rna=ptime_rna[celline==ptime_rna$cell,"pseudotime"]
+    maxtime_rna=max(time_rna)  
+    mintime_rna=min(time_rna)
+    RNA<-data.frame(pseudotime=time_rna,expr=expr_rna)
+    time_atac=pval_atac[celline==pval_atac$cell,"pseudotime"]
+    maxtime_atac=max(time_atac)
+    mintime_atac=min(time_atac)
+    if(maxtime_rna>maxtime_atac){max_time=maxtime_rna}else{max_time=maxtime_atac}  
+    if(mintime_rna<mintime_atac){min_time=mintime_rna}else{min_time=mintime_atac} 
+    interval<-seq(min_time, max_time, length.out = smoothing_parameter)
+    model_RNA<-loess(expr ~ pseudotime, data = RNA)
+    interpolation_rna <- predict(model_RNA,newdata =interval)
+  for ( i in sites) {
+    x=pval_atac[celline==pval_atac$cell,paste0(i)]
+    b=pval_atac$"treatment"[celline==pval_atac$cell]
+    ATAC<-data.frame(pseudotime=time_atac,pval=x)
+    model_ATAC<-loess(pval ~ pseudotime, data = ATAC)
+    interpolation_atac <- predict(model_ATAC,newdata =interval)
+    DMSO_p<-x[b=="DMSO"]
+    Tram_p<-x[b=="Tram"]
+    log2fold<-log2(mean(Tram_p)/mean(DMSO_p))
+    res<-wilcox.test(x~b)
+    corr_df<-na.omit(data.frame(x=interpolation_atac,y=interpolation_rna))
+    res_corr=cor(x=corr_df$x,y=corr_df$y,method = "spearman")
+    resdf<-data.frame(site=i,log2fold=log2fold,pval=res$p.value,celline=celline,gene=gene_name,corr_sp=res_corr)
+    test_result<-rbind(test_result,resdf)
+    
+  }
+  }
+  test_result$coaccess=str_split_fixed(test_result$site,"_CA_",2)[,2]
+  return(test_result)
+  }
+  }
+}
+
+#read in GENES that are up or down qval<0.05 and log2val>1
+GENES<-read.delim("scRNA_results_all_passing_for_summary_analysis.txt")
+
+gene_list_up=GENES$Up
+gene_list_up<-gene_list_up[gene_list_up != ""]
+gene_list_down=GENES$Down
+gene_list_down<-gene_list_down[gene_list_down != ""]
+
+
+# Calculate the number of cores
+no_cores <- 40
+# Initiate cluster
+cl <- makeCluster(no_cores,outfile="Down.log.txt")
+clusterExport(cl, list("corr_rna_atac_access","GetAssayData","bedr","FetchData","bedr.sort.region","str_split_fixed","cisTopicObject","pred.df","all.rna","ptime","cicero","all_peaks_sort"))
+final_l_d<-parLapply(cl, gene_list_down,function(x){corr_rna_atac_access(x,method="aggregate")})
+stopCluster(cl)
+final<-rbindlist(final_l_d,use.names=TRUE)
+write.table(final,file="RNA_down_genes_summary_for_sites_001cutoff.txt",quote = F,sep = "\t",col.names = T,row.names = F)
+
+# Calculate the number of cores
+no_cores <- 25
+# Initiate cluster
+cl2 <- makeCluster(no_cores)
+clusterExport(cl2, list("corr_rna_atac_access","GetAssayData","bedr","FetchData","bedr.sort.region","str_split_fixed","cisTopicObject","pred.df","all.rna","ptime","cicero","all_peaks_sort"))
+final_l_u<-parLapply(cl2, gene_list_up,function(x){corr_rna_atac_access(x,method="aggregate")})
+stopCluster(cl2)
+final2<-rbindlist(final_l_u,use.names=TRUE)
+write.table(final2,file="RNA_up_genes_summary_for_sites_001.txt",quote = F,sep = "\t",col.names = T,row.names = F)
+```
+
+
+Downstream analysis for global dist cutoff 0.15
+```{r}
+#==========================================================================#
+#look at which change happens in RNA
+#this was done with the 0.15 cutoff for coacess first we then did 0.001 afterwards in
+
+RNA_change<-read.delim("scRNA_results_all_passing_for_celltype_spec.txt")
+RNA_change_clean<-apply(RNA_change,2,function(x) x[x != ""])
+
+
+final<-read.delim("RNA_down_genes_summary_for_sites.txt")
+final2<-read.delim("RNA_up_genes_summary_for_sites.txt")
+#calculate qvalue
+library(qvalue)
+library(data.table)
+library(BBmisc)
+final$qval<-qvalue(final$pval)$qvalues
+final2$qval<-qvalue(final2$pval)$qvalues
+#add information of which celline changes
+
+down_vec<-c("MDA_DOWN","SUM_DOWN","HCC1143S_DOWN","HCC1143G_DOWN","HCC1806_DOWN")
+up_vec<-c("MDA_UP","SUM_UP","HCC1143S_UP","HCC1143G_UP","HCC1806_UP")
+RNA_ATAC_master_down<-data.frame(site=character(),log2fold=double(),pval=double(),celline=character(),gene=character(),corr_sp=double(),coaccess=double(),qval=double())
+for (i in down_vec)
+{
+  print(i)
+  #first get list of genes that are changing in RNA
+  gene_list<-RNA_change_clean[[paste0(i)]]
+  matched_gene_df<-rbindlist(lapply(gene_list,function(x) final[final$gene==x,]),use.names=TRUE)
+  comp_gene<-gsub("_DOWN","",i)
+  g<-matched_gene_df[matched_gene_df$celline==comp_gene,]
+  RNA_ATAC_master_down<-rbind(RNA_ATAC_master_down,g)
+}
+RNA_ATAC_master_up<-data.frame(site=character(),log2fold=double(),pval=double(),celline=character(),gene=character(),corr_sp=double(),coaccess=double(),qval=double())
+for (i in up_vec)
+{
+  #first get list of genes that are changing in RNA
+  gene_list<-RNA_change_clean[[paste0(i)]]
+  matched_gene_df<-rbindlist(lapply(gene_list,function(x) final2[final2$gene==x,]),use.names=TRUE)
+  comp_gene<-gsub("_UP","",i)
+  g<-matched_gene_df[matched_gene_df$celline==comp_gene,]
+  RNA_ATAC_master_up<-rbind(RNA_ATAC_master_up,g)
+}
+
+write.table(RNA_ATAC_master_down,file="RNA_ATAC_master_list_down.txt",quote = F,sep = "\t",col.names = T,row.names = F)
+write.table(RNA_ATAC_master_up,file="RNA_ATAC_master_list_up.txt",quote = F,sep = "\t",col.names = T,row.names = F)
+
+RNA_DOWN_short<-data.frame(site=RNA_ATAC_master_down$site,log2FoldChange=RNA_ATAC_master_down$log2fold,qval=RNA_ATAC_master_down$qval,celline=RNA_ATAC_master_down$celline,gene=RNA_ATAC_master_down$gene)
+#collapse repeats
+RNA_DOWN_short<-aggregate(data=RNA_DOWN_short,celline~.,FUN=paste,collapse=",")
+
+RNA_UP_short<-data.frame(site=RNA_ATAC_master_up$site,log2FoldChange=RNA_ATAC_master_up$log2fold,qval=RNA_ATAC_master_up$qval,celline=RNA_ATAC_master_up$celline,gene=RNA_ATAC_master_up$gene)
+#collapse repeats
+RNA_UP_short<-aggregate(data=RNA_UP_short,celline~.,FUN=paste,collapse=",")
+
+levels(RNA_DOWN_short$celline)
+library(reshape2)
+library("EnhancedVolcano")
+library(stringr)
+
+g<-EnhancedVolcano(RNA_UP_short,
+                   lab=RNA_UP_short$gene,
+                   x = 'log2FoldChange',
+                   y = 'qval',
+                   xlim = c(-8, 8),
+                   ylab = bquote(~ -Log[10]~italic(q)),
+                   title = 'Curated ',
+                   pCutoff = 0.05,
+                   FCcutoff = 1,
+                   transcriptPointSize = 1.5,
+                   transcriptLabSize = 3.0,legend = c("NS","NS","NS","q & Log2FC"),
+                   col=c('black','black','black', 'grey50'),
+                   colAlpha = 1,gridlines.major = F,gridlines.minor = F,DrawConnectors = F)
+
+#,widthConnectors = 0.2,colConnectors = 'grey30')
+png("Tram_DMSO_DA_RNA_Tram_DMSo_pass_UP.png",res = 600,height = 6,width = 6,units = "in")
+g
+dev.off()
+
+pdf("Tram_DMSO_DA_RNA_Tram_DMSo_pass_UP.pdf",height = 5,width = 5)
+g
+dev.off()
+
+g<-EnhancedVolcano(RNA_DOWN_short,
+                   lab=RNA_DOWN_short$gene,
+                   x = 'log2FoldChange',
+                   y = 'qval',
+                   xlim = c(-8, 8),
+                   ylab = bquote(~ -Log[10]~italic(q)),
+                   title = 'Curated DOWN',
+                   pCutoff = 0.05,
+                   FCcutoff = 1,
+                   transcriptPointSize = 1.5,
+                   transcriptLabSize = 3.0,legend = c("NS","NS","NS","q & Log2FC"),
+                   col=c('black','black','black', 'grey50'),
+                   colAlpha = 1,gridlines.major = F,gridlines.minor = F,DrawConnectors = F)
+
+#,widthConnectors = 0.2,colConnectors = 'grey30')
+png("Tram_DMSO_DA_RNA_Tram_DMSo_pass_DOWN.png",res = 600,height = 6,width = 6,units = "in")
+g
+dev.off()
+
+pdf("Tram_DMSO_DA_RNA_Tram_DMSo_pass_DOWN.pdf",height = 5,width = 5)
+g
+dev.off()
+
+#color override
+color<-read.delim(header=F,file="cell2.annot.colors")
+
+keys<-RNA_DOWN_short$celline
+annotation<-as.character(color$V2[match(keys,color$V1)])
+names(annotation)<-keys
+
+g<-EnhancedVolcano(RNA_DOWN_short,
+                   lab=RNA_DOWN_short$celline,
+                   x = 'log2FoldChange',
+                   y = 'qval',
+                   xlim = c(-8, 8),
+                   ylab = bquote(~ -Log[10]~italic(q)),
+                   title = 'Curated DOWN',
+                   pCutoff = 0.05,
+                   FCcutoff = 1,
+                   colOverride=annotation,
+                   transcriptPointSize = 1.5,
+                   transcriptLabSize = 3.0,
+                   colAlpha = 1,gridlines.major = F,gridlines.minor = F,DrawConnectors = F)
+
+#,widthConnectors = 0.2,colConnectors = 'grey30')
+png("Tram_DMSO_DA_RNA_Tram_DMSo_pass_DOWN_col.png",res = 600,height = 6,width = 6,units = "in")
+g
+dev.off()
+
+pdf("Tram_DMSO_DA_RNA_Tram_DMSo_pass_DOWN_col.pdf",height = 5,width = 5)
+g
+dev.off()
+
+
+keys<-RNA_UP_short$celline
+annotation<-as.character(color$V2[match(keys,color$V1)])
+names(annotation)<-keys
+
+g<-EnhancedVolcano(RNA_UP_short,
+                   lab=RNA_UP_short$celline,
+                   x = 'log2FoldChange',
+                   y = 'qval',
+                   xlim = c(-8, 8),
+                   ylab = bquote(~ -Log[10]~italic(q)),
+                   title = 'Curated UP',
+                   pCutoff = 0.05,
+                   FCcutoff = 1,
+                   colOverride=annotation,
+                   transcriptPointSize = 1.5,
+                   transcriptLabSize = 3.0,
+                   colAlpha = 1,gridlines.major = F,gridlines.minor = F,DrawConnectors = F)
+
+#,widthConnectors = 0.2,colConnectors = 'grey30')
+png("Tram_DMSO_DA_RNA_Tram_DMSo_pass_UP_col.png",res = 600,height = 6,width = 6,units = "in")
+g
+dev.off()
+
+pdf("Tram_DMSO_DA_RNA_Tram_DMSo_pass_UP_col.pdf",height = 5,width = 5)
+g
+dev.off()
+
+
+#lets see the correlation 
+#remove 1
+corr_fin_up<-RNA_ATAC_master_up[RNA_ATAC_master_up$coaccess != 1 ,]
+
+corr_fin_down<-RNA_ATAC_master_down[RNA_ATAC_master_down$coaccess !=1 ,]
+
+colorcode=as.character(color$V2)
+names(colorcode)=color$V1
+library(ggplot2)
+library(bedr)
+library(stringr)
+g<-ggplot(corr_fin_up,aes(x=coaccess,y=corr_sp,color=celline))+geom_point()+theme_minimal()+scale_color_manual(values=colorcode)
+ggsave(g,file="Tram_DMSO_corr_to_coaccess_up.pdf",height = 5,width = 5)
+
+g<-ggplot(corr_fin_down,aes(x=coaccess,y=corr_sp,color=celline))+geom_point()+theme_minimal()+scale_color_manual(values=colorcode)
+ggsave(g,file="Tram_DMSO_corr_to_coaccess_down.pdf",height = 5,width = 5)
+
+
+Uniq_sites<-read.table(file="Combined_celline_unique_sites.bed")
+Uniq_sites_combo<-paste0(Uniq_sites$V1,":",Uniq_sites$V2,"-",Uniq_sites$V3)
+
+#intersect topic sites
+Uniq_up_landscape<-str_split_fixed(corr_fin_up$site,"_",4)[,1:3]
+Uniq_up<-paste0(Uniq_up_landscape[,1],":",Uniq_up_landscape[,2],"-",Uniq_up_landscape[,3])
+corr_fin_up$site2form<-Uniq_up
+
+
+Intersected_uniq_up<-corr_fin_up[na.omit(match(Uniq_sites_combo,corr_fin_up$site2form)),]
+g<-ggplot(corr_fin_up,aes(x=coaccess,y=corr_sp,color=celline))+geom_point(data=Intersected_uniq_up,aes(x=coaccess,y=corr_sp,color=celline),inherit.aes = F)+theme_minimal()+scale_color_manual(values=colorcode)
+ggsave(g,file="Tram_DMSO_corr_to_coaccess_up_marked_unique_sites.pdf",height = 5,width = 5)
+
+
+#ok so now I will have to define a cutoff based on the correlation, fold change and p value
+#I have cases 4 categories UP gene, sites open and close, down genes, sites open and close
+#First, cutoff
+down_rna_down_peak<-RNA_ATAC_master_down[RNA_ATAC_master_down$qval<0.01 & RNA_ATAC_master_down$log2fold > 0.322,]
+down_rna_up_peak<-RNA_ATAC_master_down[RNA_ATAC_master_down$qval<0.01 & RNA_ATAC_master_down$log2fold < - 0.322,]
+up_rna_down_peak<-RNA_ATAC_master_up[RNA_ATAC_master_up$qval<0.01 & RNA_ATAC_master_up$log2fold > 0.322,]
+up_rna_up_peak<-RNA_ATAC_master_up[RNA_ATAC_master_up$qval<0.01 & RNA_ATAC_master_up$log2fold < - 0.322,]
+
+for (i in levels(RNA_ATAC_master_down$celline))
+{
+  print(i)
+  d_d<-str_split_fixed(gsub("-","_",down_rna_down_peak$site)[down_rna_down_peak$celline == paste0(i)],"_",4)[,1:3]
+  u_u<-str_split_fixed(gsub("-","_",up_rna_up_peak$site)[up_rna_up_peak$celline == paste0(i)],"_",4)[,1:3]
+  u_d<-str_split_fixed(gsub("-","_",up_rna_down_peak$site)[up_rna_down_peak$celline == paste0(i)],"_",4)[,1:3]
+  d_u<-str_split_fixed(gsub("-","_",down_rna_up_peak$site)[down_rna_up_peak$celline == paste0(i)],"_",4)[,1:3]
+ 
+  #do intersect so you write out peaks that are from all peaks
+  d_d_s<-bedr.sort.region(paste0(d_d[,1],":",d_d[,2],"-",d_d[,3]))
+  d_d_s_i_s<-bedr(input = list(a = all_peaks_sort, b = d_d_s), method="intersect",params ="-wa -wb -sorted")
+  d_d_s_f<-data.frame(str_split_fixed(gsub("-",":",d_d_s_i_s$index),":",3))
+  write.table(d_d_s_f,file=paste0(i,"_","gene_down_peak_down.bed"),quote = F,sep = "\t",row.names = F,col.names = F)
+  u_u_s<-bedr.sort.region(paste0(u_u[,1],":",u_u[,2],"-",u_u[,3]))
+  u_u_s_i_s<-bedr(input = list(a = all_peaks_sort, b = u_u_s), method="intersect",params ="-wa -wb -sorted")
+  u_u_s_f<-data.frame(str_split_fixed(gsub("-",":",u_u_s_i_s$index),":",3))
+  write.table(u_u_s_f,file=paste0(i,"_","gene_up_peak_up.bed"),quote = F,sep = "\t",row.names = F,col.names = F)
+  u_d_s<-bedr.sort.region(paste0(u_d[,1],":",u_d[,2],"-",u_d[,3]))
+  u_d_s_i_s<-bedr(input = list(a = all_peaks_sort, b = u_d_s), method="intersect",params ="-wa -wb -sorted")
+  u_d_s_f<-data.frame(str_split_fixed(gsub("-",":",u_d_s_i_s$index),":",3))
+  write.table(u_d,file=paste0(i,"_","gene_up_peak_down.bed"),quote = F,sep = "\t",row.names = F,col.names = F)
+  d_u_s<-bedr.sort.region(paste0(d_u[,1],":",d_u[,2],"-",d_u[,3]))
+  d_u_s_i_s<-bedr(input = list(a = all_peaks_sort, b = d_u_s), method="intersect",params ="-wa -wb -sorted")
+  d_u_s_f<-data.frame(str_split_fixed(gsub("-",":",d_u_s_i_s$index),":",3))
+  write.table(d_u,file=paste0(i,"_","gene_down_peak_up.bed"),quote = F,sep = "\t",row.names = F,col.names = F)
+}
+```
+
+Examples for quartiles and etc
+```{r}
+#RNA up and down
+RNA_ATAC_master_down<-read.delim("RNA_ATAC_master_list_down.txt")
+RNA_ATAC_master_up<-read.delim("RNA_ATAC_master_list_up.txt")
+plot_rna_atac_access(gene_name="IRX3",method="aggregate")
+#0.8077, 0.9767382
+RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp > 0.8 & RNA_ATAC_master_down$coaccess > 0.8,]
+#0.8377 0.9214863
+#"chr4_74408574_74456871_CA_1.0000","chr4_74056644_74057179_CA_0.8377"
+plot_rna_atac_access(gene_name="AREG",method="aggregate")
+select_d_u_u<-RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp < -0.8 & RNA_ATAC_master_down$coaccess > 0.8,]
+select_d_u_u[order(select_d_u_u$log2fold),]
+
+plot_rna_atac_access(gene_name="DNMT1",method="aggregate")
+#c("chr19_10135520_10152604_CA_1.0000","chr19_10346583_10364377_CA_0.8377")
+#0.8377 -0.8278881
+select_u_d_d<-RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp < -0.5 & RNA_ATAC_master_up$coaccess > 0.15,]
+select_u_d_d[order(select_u_d_d$coaccess),]
+#interesting this is where you have multiple lines changing and on anti correlated usually so have to lower to 0.15
+
+plot_rna_atac_access(gene_name="LINC01133",method="aggregate")
+select_u_d_d[select_u_d_d$gene=="LINC01133",]
+#c("chr1_159959392_159961441_CA_1.0000","chr1_159817174_159829677_CA_0.1788")
+#0.1788    -0.7992080
+select_u_u_d<-RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp < -0.5 & RNA_ATAC_master_up$coaccess < -0.15,]
+select_u_u_d[order(select_u_u_d$log2fold),]
+
+#c("chr8_123516883_123598101_CA_1.0000","chr8_123877943_123883529_CA__0.3880")
+plot_rna_atac_access(gene_name="FBXO32",method="aggregate")
+#-0.3880 -0.9529627
+
+select_d_d_u<-RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp < -0.5 & RNA_ATAC_master_down$coaccess < -0.15,]
+select_d_d_u[order(select_d_d_u$log2fold),]
+plot_rna_atac_access(gene_name="TYMS",method="aggregate")
+#-0.2669 -0.9997930
+
+select_u_d_u<-RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp > 0.5 & RNA_ATAC_master_up$coaccess < -0.15,]
+select_u_d_u[order(select_u_d_u$log2fold),]
+#-0.3625 0.9200570  
+plot_rna_atac_access(gene_name="FRMD6",method="aggregate")
+
+select_d_u_d<-RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp > 0.5 & RNA_ATAC_master_down$coaccess < -0.15,]
+select_d_u_d[order(select_d_u_d$log2fold),]
+plot_rna_atac_access(gene_name="TSC22D1",method="aggregate")
+#-0.1506 0.9880368  
+
+
+#search for cases when at least 3 cellines change
+corrected_peaks_down<-paste(str_split_fixed(gsub("-","_",RNA_ATAC_master_down$site),"_",4)[,1],str_split_fixed(gsub("-","_",RNA_ATAC_master_down$site),"_",4)[,2],str_split_fixed(gsub("-","_",RNA_ATAC_master_down$site),"_",4)[,3],sep = "_")
+count_peaksd<-table(corrected_peaks_down)
+peaks_d<-names(count_peaksd[count_peaksd>3])
+gene_list_multiple_change_d<-unique(RNA_ATAC_master_down[match(peaks_d,corrected_peaks_down),]$gene)
+
+#search for cases when at least 3 cellines change
+corrected_peaks_up<-paste(str_split_fixed(gsub("-","_",RNA_ATAC_master_up$site),"_",4)[,1],str_split_fixed(gsub("-","_",RNA_ATAC_master_up$site),"_",4)[,2],str_split_fixed(gsub("-","_",RNA_ATAC_master_up$site),"_",4)[,3],sep = "_")
+count_peaksu<-table(corrected_peaks_up)
+peaks_u<-names(count_peaksu[count_peaksu>3])
+gene_list_multiple_change_d<-unique(RNA_ATAC_master_up[match(peaks_u,corrected_peaks_up),]$gene)
+
+
+sapply(gene_list_multiple_change_d,function(x){plot_rna_atac_access(x,method="aggregate")})
+
+```
+
+#same but plotting REs on global and with 0.001 cutoff
+```{r}
+
+RNA_change<-read.delim("scRNA_results_all_passing_for_celltype_spec.txt")
+RNA_change_clean<-apply(RNA_change,2,function(x) x[x != ""])
+
+
+final<-read.delim("RNA_down_genes_summary_for_sites_001cutoff.txt")
+final2<-read.delim("RNA_up_genes_summary_for_sites_001.txt")
+#calculate qvalue
+library(qvalue)
+library(data.table)
+library(BBmisc)
+final$qval<-qvalue(final$pval)$qvalues
+final2$qval<-qvalue(final2$pval)$qvalues
+#add information of which celline changes
+
+
+
+down_vec<-c("MDA_DOWN","SUM_DOWN","HCC1143S_DOWN","HCC1143G_DOWN","HCC1806_DOWN")
+up_vec<-c("MDA_UP","SUM_UP","HCC1143S_UP","HCC1143G_UP","HCC1806_UP")
+RNA_ATAC_master_down<-data.frame(site=character(),log2fold=double(),pval=double(),celline=character(),gene=character(),corr_sp=double(),coaccess=double(),qval=double())
+for (i in down_vec)
+{
+  print(i)
+  #first get list of genes that are changing in RNA
+  gene_list<-RNA_change_clean[[paste0(i)]]
+  matched_gene_df<-rbindlist(lapply(gene_list,function(x) final[final$gene==x,]),use.names=TRUE)
+  comp_gene<-gsub("_DOWN","",i)
+  g<-matched_gene_df[matched_gene_df$celline==comp_gene,]
+  RNA_ATAC_master_down<-rbind(RNA_ATAC_master_down,g)
+}
+RNA_ATAC_master_up<-data.frame(site=character(),log2fold=double(),pval=double(),celline=character(),gene=character(),corr_sp=double(),coaccess=double(),qval=double())
+for (i in up_vec)
+{
+  #first get list of genes that are changing in RNA
+  gene_list<-RNA_change_clean[[paste0(i)]]
+  matched_gene_df<-rbindlist(lapply(gene_list,function(x) final2[final2$gene==x,]),use.names=TRUE)
+  comp_gene<-gsub("_UP","",i)
+  g<-matched_gene_df[matched_gene_df$celline==comp_gene,]
+  RNA_ATAC_master_up<-rbind(RNA_ATAC_master_up,g)
+}
+
+write.table(RNA_ATAC_master_down,file="RNA_ATAC_master_list_down_0.001_cutoff.txt",quote = F,sep = "\t",col.names = T,row.names = F)
+write.table(RNA_ATAC_master_up,file="RNA_ATAC_master_list_up_0.001_cutoff.txt",quote = F,sep = "\t",col.names = T,row.names = F)
+
+#this is orig with not 0.15 cutoff
+RNA_ATAC_master_down<-read.delim("RNA_ATAC_master_list_down_0.001_cutoff.txt")
+RNA_ATAC_master_up<-read.delim("RNA_ATAC_master_list_up_0.001_cutoff.txt")
+
+RNA_DOWN_short<-data.frame(site=RNA_ATAC_master_down$site,log2FoldChange=RNA_ATAC_master_down$log2fold,qval=RNA_ATAC_master_down$qval,celline=RNA_ATAC_master_down$celline,gene=RNA_ATAC_master_down$gene)
+#collapse repeats
+RNA_DOWN_short<-aggregate(data=RNA_DOWN_short,celline~.,FUN=paste,collapse=",")
+
+RNA_UP_short<-data.frame(site=RNA_ATAC_master_up$site,log2FoldChange=RNA_ATAC_master_up$log2fold,qval=RNA_ATAC_master_up$qval,celline=RNA_ATAC_master_up$celline,gene=RNA_ATAC_master_up$gene)
+#collapse repeats
+RNA_UP_short<-aggregate(data=RNA_UP_short,celline~.,FUN=paste,collapse=",")
+
+levels(RNA_DOWN_short$celline)
+library(reshape2)
+library("EnhancedVolcano")
+library(stringr)
+
+g<-EnhancedVolcano(RNA_UP_short,
+                   lab=RNA_UP_short$gene,
+                   x = 'log2FoldChange',
+                   y = 'qval',
+                   xlim = c(-8, 8),
+                   ylab = bquote(~ -Log[10]~italic(q)),
+                   title = 'Curated ',
+                   pCutoff = 0.05,
+                   FCcutoff = 1,
+                   transcriptPointSize = 1.5,
+                   transcriptLabSize = 3.0,legend = c("NS","NS","NS","q & Log2FC"),
+                   col=c('black','black','black', 'grey50'),
+                   colAlpha = 1,gridlines.major = F,gridlines.minor = F,DrawConnectors = F)
+
+#,widthConnectors = 0.2,colConnectors = 'grey30')
+png("Tram_DMSO_DA_RNA_Tram_DMSo_pass_UP.png",res = 600,height = 6,width = 6,units = "in")
+g
+dev.off()
+
+pdf("Tram_DMSO_DA_RNA_Tram_DMSo_pass_UP.pdf",height = 5,width = 5)
+g
+dev.off()
+
+
+
+
+g<-EnhancedVolcano(RNA_DOWN_short,
+                   lab=RNA_DOWN_short$gene,
+                   x = 'log2FoldChange',
+                   y = 'qval',
+                   xlim = c(-8, 8),
+                   ylab = bquote(~ -Log[10]~italic(q)),
+                   title = 'Curated DOWN',
+                   pCutoff = 0.05,
+                   FCcutoff = 1,
+                   transcriptPointSize = 1.5,
+                   transcriptLabSize = 3.0,legend = c("NS","NS","NS","q & Log2FC"),
+                   col=c('black','black','black', 'grey50'),
+                   colAlpha = 1,gridlines.major = F,gridlines.minor = F,DrawConnectors = F)
+
+#,widthConnectors = 0.2,colConnectors = 'grey30')
+png("Tram_DMSO_DA_RNA_Tram_DMSo_pass_DOWN.png",res = 600,height = 6,width = 6,units = "in")
+g
+dev.off()
+
+pdf("Tram_DMSO_DA_RNA_Tram_DMSo_pass_DOWN.pdf",height = 5,width = 5)
+g
+dev.off()
+
+#color override
+color<-read.delim(header=F,file="cell2.annot.colors")
+
+keys<-RNA_DOWN_short$celline
+annotation<-as.character(color$V2[match(keys,color$V1)])
+names(annotation)<-keys
+
+g<-EnhancedVolcano(RNA_DOWN_short,
+                   lab=RNA_DOWN_short$celline,
+                   x = 'log2FoldChange',
+                   y = 'qval',
+                   xlim = c(-3, 3),
+                   ylab = bquote(~ -Log[10]~italic(q)),
+                   title = 'Curated DOWN',
+                   pCutoff = 0.05,
+                   FCcutoff = 1,
+                   colOverride=annotation,
+                   transcriptPointSize = 1.5,
+                   transcriptLabSize = 3.0,
+                   colAlpha = 1,gridlines.major = F,gridlines.minor = F,DrawConnectors = F)
+
+#,widthConnectors = 0.2,colConnectors = 'grey30')
+png("Tram_DMSO_DA_RNA_Tram_DMSo_pass_DOWN_col.png",res = 600,height = 6,width = 6,units = "in")
+g
+dev.off()
+
+pdf("Tram_DOWN_correct.pdf",height = 5,width = 5)
+g
+dev.off()
+
+
+keys<-RNA_UP_short$celline
+annotation<-as.character(color$V2[match(keys,color$V1)])
+names(annotation)<-keys
+
+g<-EnhancedVolcano(RNA_UP_short,
+                   lab=RNA_UP_short$celline,
+                   x = 'log2FoldChange',
+                   y = 'qval',
+                   xlim = c(-3, 3),
+                   ylab = bquote(~ -Log[10]~italic(q)),
+                   title = 'Curated UP',
+                   pCutoff = 0.05,
+                   FCcutoff = 1,
+                   colOverride=annotation,
+                   transcriptPointSize = 1.5,
+                   transcriptLabSize = 3.0,
+                   colAlpha = 1,gridlines.major = F,gridlines.minor = F,DrawConnectors = F)
+
+#,widthConnectors = 0.2,colConnectors = 'grey30')
+png("Tram_DMSO_DA_RNA_Tram_DMSo_pass_UP_col.png",res = 600,height = 6,width = 6,units = "in")
+g
+dev.off()
+
+pdf("Tram_UP_correct.pdf",height = 5,width = 5)
+g
+dev.off()
+
+
+#lets see the correlation but without the corr cutoff
+#remove 1
+corr_fin_up<-na.omit(RNA_ATAC_master_up[RNA_ATAC_master_up$coaccess != 1 ,])
+
+corr_fin_down<-na.omit(RNA_ATAC_master_down[RNA_ATAC_master_down$coaccess !=1 ,])
+
+
+df_examples=data.frame(coaccess=c(0.8077,0.8377,0.8377,0.1788,-0.3880,-0.2669,-0.3625,-0.1506),corr_sp=c(0.9214863,0.9767382,-0.8278881,-0.7992080,-0.9529627,-0.9997930,0.9200570,0.9880368),label=c("RE1","RE2","RE4","RE3","RE5","RE6","RE7","RE8"))
+  
+colorcode=as.character(color$V2)
+names(colorcode)=color$V1
+library(ggplot2)
+g1<-ggplot()+geom_density_2d(data=corr_fin_up,aes(x=coaccess,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")+geom_point(aes(x=coaccess,y=corr_sp),data=df_examples)+geom_text(data=df_examples,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
+g2<-ggplot()+geom_density_2d(data=corr_fin_down,aes(x=coaccess,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")+geom_point(data=df_examples,aes(x=coaccess,y=corr_sp))+geom_text(data=df_examples,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
+library(ggpubr)
+
+g<-ggarrange(g1,g2,widths=c(8,8),ncol=2,nrow=1)
+ggsave(g,filename = "Output_quartiles_w_examples_big.pdf",width = 16,height = 26.4,units = "cm")
+
+#ok so now I will have to define a cutoff based on the correlation, fold change and p value
+#I have cases 4 categories UP gene, sites open and close, down genes, sites open and close
+
+
+#First, aritrary cutoff
+down_rna_down_peak<-RNA_ATAC_master_down[RNA_ATAC_master_down$qval<0.01 & RNA_ATAC_master_down$log2fold > 0.322,]
+down_rna_up_peak<-RNA_ATAC_master_down[RNA_ATAC_master_down$qval<0.01 & RNA_ATAC_master_down$log2fold < - 0.322,]
+up_rna_down_peak<-RNA_ATAC_master_up[RNA_ATAC_master_up$qval<0.01 & RNA_ATAC_master_up$log2fold > 0.322,]
+up_rna_up_peak<-RNA_ATAC_master_up[RNA_ATAC_master_up$qval<0.01 & RNA_ATAC_master_up$log2fold < - 0.322,]
+
+
+#this is 0.001 cutoff, lets see the dist of log2val
+library(ggplot2)
+#RNA_ATAC_master_list_down_0.001_cutoff.txt
+RNA_ATAC_master_down<-read.delim("RNA_ATAC_master_list_down_0.001_cutoff.txt")
+RNA_ATAC_master_up<-read.delim("RNA_ATAC_master_list_up_0.001_cutoff.txt")
+#remove promoters 
+RNA_ATAC_master_up=RNA_ATAC_master_up[RNA_ATAC_master_up$coaccess != 1 ,]
+RNA_ATAC_master_down=RNA_ATAC_master_down[RNA_ATAC_master_down$coaccess != 1 ,]
+
+Q1<-data.frame(site=RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp > 0.5 & RNA_ATAC_master_up$coaccess > 0.15,]$site,log2fold=RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp > 0.5 & RNA_ATAC_master_up$coaccess > 0.15,]$log2fold,annot=rep("Q1",times=length(RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp > 0.5 & RNA_ATAC_master_up$coaccess > 0.15,]$corr_sp)))
+Q2<-data.frame(site=RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp < -0.5 & RNA_ATAC_master_up$coaccess > 0.15,]$site,log2fold=RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp < -0.5 & RNA_ATAC_master_up$coaccess > 0.15,]$log2fold,annot=rep("Q2",times=length(RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp < -0.5 & RNA_ATAC_master_up$coaccess > 0.15,]$corr_sp)))
+Q3<-data.frame(site=RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp < -0.5 & RNA_ATAC_master_up$coaccess < -0.15,]$site,log2fold=RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp < -0.5 & RNA_ATAC_master_up$coaccess < -0.15,]$log2fold,annot=rep("Q3",times=length(RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp < -0.5 & RNA_ATAC_master_up$coaccess < -0.15,]$corr_sp)))
+Q4<-data.frame(site=RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp > 0.5 & RNA_ATAC_master_up$coaccess < -0.15,]$site,log2fold=RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp > 0.5 & RNA_ATAC_master_up$coaccess < -0.15,]$log2fold,annot=rep("Q4",times=length(RNA_ATAC_master_up[RNA_ATAC_master_up$corr_sp > 0.5 & RNA_ATAC_master_up$coaccess < -0.15,]$corr_sp)))
+
+Qcomp_up<-rbind(Q1,Q2,Q3,Q4)
+
+write.table(Qcomp,file="Quartiles_up.txt",quote = F,sep = "\t")
+
+#this follows what we were expecting
+g<-ggplot(Qcomp,aes(y=log2fold,x=annot))+geom_boxplot()+theme_classic()+theme(legend.position = "none")
+ggsave(g,file="Q_breakdown_up_0.15.pdf",height = 5,width = 5)
+
+Q1<-data.frame(site=RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp > 0.5 & RNA_ATAC_master_down$coaccess > 0.15,]$site,log2fold=RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp > 0.5 & RNA_ATAC_master_down$coaccess > 0.15,]$log2fold,annot=rep("Q1",times=length(RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp > 0.5 & RNA_ATAC_master_down$coaccess > 0.15,]$corr_sp)))
+Q2<-data.frame(site=RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp < -0.5 & RNA_ATAC_master_down$coaccess > 0.15,]$site,log2fold=RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp < -0.5 & RNA_ATAC_master_down$coaccess > 0.15,]$log2fold,annot=rep("Q2",times=length(RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp < -0.5 & RNA_ATAC_master_down$coaccess > 0.15,]$corr_sp)))
+Q3<-data.frame(site=RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp < -0.5 & RNA_ATAC_master_down$coaccess < -0.15,]$site,log2fold=RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp < -0.5 & RNA_ATAC_master_down$coaccess < -0.15,]$log2fold,annot=rep("Q3",times=length(RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp < -0.5 & RNA_ATAC_master_down$coaccess < -0.15,]$corr_sp)))
+Q4<-data.frame(site=RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp > 0.5 & RNA_ATAC_master_down$coaccess < -0.15,]$site,log2fold=RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp > 0.5 & RNA_ATAC_master_down$coaccess < -0.15,]$log2fold,annot=rep("Q4",times=length(RNA_ATAC_master_down[RNA_ATAC_master_down$corr_sp > 0.5 & RNA_ATAC_master_down$coaccess < -0.15,]$corr_sp)))
+
+Qcomp_down<-rbind(Q1,Q2,Q3,Q4)
+
+write.table(Qcomp,file="Quartiles_down.txt",quote = F,sep = "\t")
+
+#this follows what we were expecting
+g<-ggplot(Qcomp,aes(y=log2fold,x=annot))+geom_boxplot()+theme_classic()+theme(legend.position = "none")
+ggsave(g,file="Q_breakdown_down_0.15.pdf",height = 5,width = 5)
+
+
+
+
+```
+
+
+```{r}
+#example of where the gene promoters are close and we get shared signal
+plot_rna_atac_access("HES4",method="IND")
+plot_rna_atac_access("ISG15",method="IND")
+
+#lets look if we can decipher which enhancers are used by which
+gene_up_example<-rbind(up_rna_down_peak,up_rna_up_peak)
+RNA_ATAC_master_up[(RNA_ATAC_master_up$gene=="HES4" | RNA_ATAC_master_up$gene=="ISG15"),]
+
+corr_matchup<-RNA_ATAC_master_up[(RNA_ATAC_master_up$gene=="HES4" | RNA_ATAC_master_up$gene=="ISG15"),]$corr
+RNA_ATAC_master_up[(RNA_ATAC_master_up$gene=="HES4" | RNA_ATAC_master_up$gene=="ISG15"),][abs(corr_matchup)>0.9,]
+
+
+#lets look for a case where the site is a repressor and an enhancer as well
+res_comparison=data.frame(site=character(),difference_log2=double(),difference_corr=double())
+for (i in levels(RNA_ATAC_master_up$site) ){
+  select=RNA_ATAC_master_up[RNA_ATAC_master_up$site==paste(i),]
+  test_set<-select$log2fold
+  test_set2<-select$corr_sp
+  #select for cases where miltiple genes changes
+  if(dim(select)>1)
+  {
+  comparisons_log2<-sapply(test_set,function(x){abs(test_set-x)})
+  res_log2<-max(comparisons_log2[lower.tri(comparisons_log2)])
+  comparisons_corr<-sapply(test_set2,function(x){abs(test_set-x)})
+  res_corr<-max(comparisons_corr[lower.tri(comparisons_corr)])
+  #print(res)
+  res_comparison=rbind(res_comparison,data.frame(site=paste(i),difference_log2=res_log2,difference_corr=res_corr))
+}
+  
+}
+
+final_ordered_difference_up<-res_comparison[order(res_comparison$difference_log2),]
+
+which_gene=RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr10_3689885_3690385_CA_0.1836",]
+which_gene=RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr8_123877943_123883529_CA_-0.3880",]
+which_gene=RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr1_153081716_153082216_CA_0.4687",]
+which_gene=RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr14_69242453_69242953_CA_0.1531",]
+
+plot_rna_atac_access("KLF6",method="aggregate")
+#plot_rna_atac_access("FBXO32",method="aggregate")
+plot_rna_atac_access("ZFP36L1",method="aggregate",select_sites = c("chr14_69242453_69242953_CA_0.1531"))
+plot_rna_atac_access("S100A9",method="aggregate",select_sites = c("chr1_153081716_153082216_CA_0.4687"))
+
+
+#same with down genes
+
+res_comparison=data.frame(site=character(),difference_log2=double(),difference_corr=double())
+for (i in levels(RNA_ATAC_master_down$site) ){
+  select=RNA_ATAC_master_down[RNA_ATAC_master_down$site==paste(i),]
+  test_set<-select$corr_sp
+  if(dim(select)>1)
+  if(dim(select)>1)
+  {
+  comparisons_log2<-sapply(test_set,function(x){abs(test_set-x)})
+  res_log2<-max(comparisons_log2[lower.tri(comparisons_log2)])
+  comparisons_corr<-sapply(test_set2,function(x){abs(test_set-x)})
+  res_corr<-max(comparisons_corr[lower.tri(comparisons_corr)])
+  #print(res)
+    res_comparison=rbind(res_comparison,data.frame(site=paste(i),difference_log2=res_log2,difference_corr=res_corr))
+}
+  
+}
+
+
+
+
+final_ordered_difference_down<-res_comparison[order(res_comparison$difference_log2),]
+
+which_gene=RNA_ATAC_master_down[RNA_ATAC_master_down$site=="chr11_65851061_65860777_CA_0.2054",]
+
+plot_rna_atac_access("FOSL1",method="aggregate",select_sites = c("chr11_65851061_65860777_CA_0.2054"))
+```
+
+
+
+
+

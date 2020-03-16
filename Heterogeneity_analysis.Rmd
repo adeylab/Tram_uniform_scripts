@@ -1,0 +1,304 @@
+---
+title: "Internal heterogeneity analysis"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+Correlation accross all dropout corrected 
+```{r}
+library(gmodels)
+library(cisTopic)
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(reshape2)
+
+cisTopicObject<-readRDS("/home/groups/oroaklab/adey_lab/projects/M2CH/180227_180214.U54.merged/cistopic/cistopic_devel_try/Finetunecontinueanal2.rds")
+
+
+cell.names <- cisTopicObject@cell.names
+pred.matrix <- predictiveDistribution(cisTopicObject)
+p<-as.data.frame(pred.matrix)
+names(p)<-cell.names
+
+
+#do the average correlation across all corrected features
+annot_ch<-read.table("/home/groups/oroaklab/adey_lab/projects/M2CH/180227_180214.U54.merged/annot/180227_180214.U54.merged_new.annot",header=F) 
+color_ch<-list(Type=c("Cell" = "lightsteelblue4","HCC1143G_DMSO" = "#99000d","HCC1143G_Tram" = "#fcbba1","HCC1143S_DMSO" = "#e66101","HCC1143S_Tram" = "#fdb863","HCC1806_DMSO" = "#006d2c","HCC1806_Tram" = "#74c476","MDA_DMSO" = "#045a8d","MDA_Tram" = "#a6bddb","SUM_DMSO" = "#810f7c","SUM_Tram" = "#8c6bb1"))
+
+annot<-annot_ch[match(colnames(p), annot_ch$V1),]
+datalist = list()
+for (i in levels(annot_ch$V2))
+{
+annot_sel=paste0(i)
+
+
+sel_names=annot$V1[which(annot$V2==annot_sel)]
+IN_pred_sel<-p[,match(sel_names, colnames(p))]
+d<-IN_pred_sel
+
+d2 <- d %>% 
+  as.matrix %>%
+  cor(method="spearman") %>%
+  as.data.frame %>%
+  rownames_to_column(var = 'var1') %>%
+  gather(var2, value, -var1)
+
+
+ # maybe you want to keep track of which iteration produced it?
+datalist[[paste0(i)]]<-data.frame(d2$value,rep(paste0(i),times=length(d2$value)))
+
+}
+big_data = do.call(rbind, datalist)
+names(big_data)<-c("Spearman_correlation","annot")
+
+#remove duplicate values which are from the smae comparison (due to 6 digits showing these are very likely not random matchups)
+big_datau<-big_data[!duplicated(big_data$Spearman_correlation),]
+
+
+library(ggplot2)
+
+plot<-ggplot(big_datau,aes(x=annot,fill=annot,y=Spearman_correlation))+geom_violin()+theme_bw()+
+        guides(fill=FALSE,colour=FALSE) +
+        xlab("Annot") +
+        ylab("Spearman Correlation") + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(plot,filename="corr_internal.png",width=7,height=3,units="in",dpi=900)
+ggsave(plot,filename="correlations_internal.pdf",width=7,height=3)
+
+
+big_datau$treatment<-str_split_fixed(big_datau$annot, "_", 2)[,2]
+big_datau$cell<-str_split_fixed(big_datau$annot, "_", 2)[,1]
+
+sink("outfile_tests_corr.txt")
+for (i in levels(factor(big_datau$cell)))
+{
+  cat(print(i))
+  sel<-big_datau[big_datau$cell==i,]
+  cat(print(wilcox.test(sel$Spearman_correlation~sel$treatment))[[1]])
+  cat(print(t.test(sel$Spearman_correlation~sel$treatment))[[1]])
+  
+}
+sink()
+
+
+```
+
+
+
+Shannon entropy all sites
+```{r}
+library(cisTopic)
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(reshape2)
+library("DescTools")
+library("entropy")
+library(ggplot2)
+library(stringr)
+
+
+#do the average correlation across all corrected features
+annot_ch<-read.table("/home/groups/oroaklab/adey_lab/projects/M2CH/180227_180214.U54.merged/annot/180227_180214.U54.merged_new.annot",header=F)
+
+#lets just see if shannon enroopy shows the same as internal het 
+ALL_matrix<-read.delim("180227_180214.U54.merged.bbrd.q10.5k.filt.500.counts.filt_1000_10.matrix")
+annot<-annot_ch[match(colnames(ALL_matrix), annot_ch$V1),]
+
+#binary matrix
+ALL_matrix[ALL_matrix>1]<-1
+combined_dataframe<-data.frame(matrix(vector(), dim(ALL_matrix)[1], 10, dimnames=list(c(), c(levels(annot_ch$V2)))))
+for (i in levels(annot_ch$V2))
+{
+  annot_sel=paste0(i)
+  sel_names=annot$V1[which(annot$V2==annot_sel)]
+  IN_pred_sel<-ALL_matrix[,match(sel_names, colnames(ALL_matrix))]
+  
+ # Shan<-apply(IN_pred_sel,1,function(x) {-sum(table(x)/length(x) * log2(table(x)/length(x)))})
+  Shan<-apply(IN_pred_sel,1,function(x) entropy.empirical(table(x)/length(x), unit="log2"))
+  print(paste0(i," ",sum(Shan,na.rm = T)))
+  combined_dataframe[i]<-Shan
+} 
+#melt it to view it
+
+mdf_DMSO<-melt(combined_dataframe[,c(1,3,5,7,9)])
+mdf<-melt(combined_dataframe)
+
+for (i in factor(mdf$cell))
+{print(i)}
+
+
+
+mdf$treatment<-str_split_fixed(mdf$variable, "_", 2)[,2]
+mdf$cell<-str_split_fixed(mdf$variable, "_", 2)[,1]
+
+sink("outfile_tests.txt")
+for (i in levels(factor(mdf$cell)))
+{
+  cat(print(i))
+  sel<-mdf[mdf$cell==i,]
+  cat(print(wilcox.test(sel$value~sel$treatment))[[1]])
+  cat(print(t.test(sel$value~sel$treatment))[[1]])
+  
+}
+sink()
+
+
+p<-ggplot(mdf_DMSO,aes(y=value,x=variable,fill=variable))+geom_violin()+geom_boxplot(width=.1,fill="white")+theme_bw()+ scale_fill_manual(values=c("#99000d", "#e66101","#006d2c","#045a8d", "#810f7c"))
+p<-p+ylab('Site shannon entropy')+xlab('')+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(p,file="Violin_shan_site_DMSO.png")
+ggsave(p,file="Violin_shan_site_DMSO.pdf")
+
+GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin, 
+                           draw_group = function(self, data, ..., draw_quantiles = NULL) {
+                             data <- transform(data, xminv = x - violinwidth * (x - xmin), xmaxv = x + violinwidth * (xmax - x))
+                             grp <- data[1, "group"]
+                             newdata <- plyr::arrange(transform(data, x = if (grp %% 2 == 1) xminv else xmaxv), if (grp %% 2 == 1) y else -y)
+                             newdata <- rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
+                             newdata[c(1, nrow(newdata) - 1, nrow(newdata)), "x"] <- round(newdata[1, "x"])
+                             
+                             if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) {
+                               stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <=
+                                                                         1))
+                               quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
+                               aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
+                               aesthetics$alpha <- rep(1, nrow(quantiles))
+                               both <- cbind(quantiles, aesthetics)
+                               quantile_grob <- GeomPath$draw_panel(both, ...)
+                               ggplot2:::ggname("geom_split_violin", grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
+                             }
+                             else {
+                               ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
+                             }
+                           })
+
+geom_split_violin <- function(mapping = NULL, data = NULL, stat = "ydensity", position = "identity", ..., 
+                              draw_quantiles = NULL, trim = TRUE, scale = "area", na.rm = FALSE, 
+                              show.legend = NA, inherit.aes = TRUE) {
+  layer(data = data, mapping = mapping, stat = stat, geom = GeomSplitViolin, 
+        position = position, show.legend = show.legend, inherit.aes = inherit.aes, 
+        params = list(trim = trim, scale = scale, draw_quantiles = draw_quantiles, na.rm = na.rm, ...))
+}
+
+p2<-ggplot(mdf, aes(x=cell,y=log10(value), fill = treatment)) + geom_split_violin()+geom_boxplot(outlier.shape=NA)+theme_classic()
+
+
+
+ggsave(p2,file="Violin2_shan_site_ALL_log10.png")
+ggsave(p2,file="Violin2_shan_site_ALL_log10.pdf")
+write.table(mdf,file="All_shan_res.txt",sep="\t",quote=F)
+
+
+```
+
+
+#print out internal distances for heterogeneity
+```{r}
+#internal heterogeneity
+library(Seurat)
+library(cowplot)
+library(reshape2)
+library(stringr)
+library("EnhancedVolcano")
+
+all_merged<-readRDS(file="scRNA_singlet_filt.rds")
+sep<-all_merged[["annot"]]
+#with prec it was 2,3
+cell<-str_split_fixed(sep[,1], "_", 3)[,1]
+cond<-str_split_fixed(sep[,1], "_", 3)[,2]
+all_merged$cell<-cell
+all_merged$treat<-cond
+
+
+library(ggplot2)
+
+GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin, 
+                           draw_group = function(self, data, ..., draw_quantiles = NULL) {
+  data <- transform(data, xminv = x - violinwidth * (x - xmin), xmaxv = x + violinwidth * (xmax - x))
+  grp <- data[1, "group"]
+  newdata <- plyr::arrange(transform(data, x = if (grp %% 2 == 1) xminv else xmaxv), if (grp %% 2 == 1) y else -y)
+  newdata <- rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
+  newdata[c(1, nrow(newdata) - 1, nrow(newdata)), "x"] <- round(newdata[1, "x"])
+
+  if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) {
+    stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <=
+      1))
+    quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
+    aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
+    aesthetics$alpha <- rep(1, nrow(quantiles))
+    both <- cbind(quantiles, aesthetics)
+    quantile_grob <- GeomPath$draw_panel(both, ...)
+    ggplot2:::ggname("geom_split_violin", grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
+  }
+  else {
+    ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
+  }
+})
+
+geom_split_violin <- function(mapping = NULL, data = NULL, stat = "ydensity", position = "identity", ..., 
+                              draw_quantiles = NULL, trim = TRUE, scale = "area", na.rm = FALSE, 
+                              show.legend = NA, inherit.aes = TRUE) {
+  layer(data = data, mapping = mapping, stat = stat, geom = GeomSplitViolin, 
+        position = position, show.legend = show.legend, inherit.aes = inherit.aes, 
+        params = list(trim = trim, scale = scale, draw_quantiles = draw_quantiles, na.rm = na.rm, ...))
+}
+
+
+#maybe internal distances
+all_dist<-data.frame(corr_val=numeric(),annot=character())
+for (i in levels(Idents(all_merged)))
+{
+Info<-subset(all_merged, idents= c(paste0(i)))
+Pwcmprs<-t(Embeddings(object = Info, reduction = "pca"))
+#Loadings(object = all_DMSO, reduction = "pca")
+#cr <- cor(Pwcmprs,method = "spearman")
+dst <- dist(Pwcmprs,method ="euclidean")
+# This is to remove redundancy as upper correlation matrix == lower 
+dst[upper.tri(dst, diag=TRUE)] <- NA
+res<-reshape2::melt(dst, na.rm=TRUE, value.name="dst")$dst
+dist<-data.frame(dist_val=res,annot=rep(paste0(i),times=length(res)))
+all_dist<-rbind(all_dist,dist)
+}
+
+cell<-str_split_fixed(all_dist$annot, "_", 3)[,1]
+cond<-str_split_fixed(all_dist$annot, "_", 3)[,2]
+all_dist$cell<-cell
+all_dist$treat<-cond
+
+p<-ggplot(all_dist, aes(x=cell,y=dist_val, fill = treat)) + geom_split_violin()+geom_boxplot(width=0.15,outlier.shape=NA) + xlab("")  + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+ theme(legend.position = "none")
+
+
+ggsave(p,filename="All_distances_RNA.pdf",width=5.5,height=6.631,units="cm")
+
+
+sink("RNA_outfile_tests_dist.txt")
+for (i in levels(factor(all_dist$cell)))
+{
+  cat(print(i))
+  sel<-all_dist[all_dist$cell==i,]
+  cat(print(wilcox.test(sel$dist_val~sel$treat))[[1]])
+  cat(print(t.test(sel$dist_val~sel$treat))[[1]])
+  
+}
+sink()
+
+
+
+
+```
+
+
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

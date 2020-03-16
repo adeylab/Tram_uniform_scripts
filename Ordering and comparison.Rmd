@@ -1,0 +1,517 @@
+---
+title: "ATAC RNA and combined ordering"
+output: html_notebook
+---
+
+We first have to order cells in the combined data frame.
+```{r}
+#first order cells based on the cobined data frame
+
+library(monocle)
+library(Seurat)
+library(stringr)
+#make cds
+#Load Seurat object of combedding
+seurat_object<-readRDS("coembed_final_standard_norm_singlet_filt.rds")
+
+cell<-str_split_fixed(seurat_object[["annot2"]][,1],"_",3)[,2]
+cell<-gsub("Trametinib","Tram",cell)
+cell<-gsub("HCCMDAMB468","MDA",cell)
+cell<-gsub("SUM149PT","SUM",cell)
+cellt<-str_split_fixed(cell,"_",2)[,1]
+treatment<-str_split_fixed(cell,"_",2)[,2]
+celltype<-seurat_object[["annot2"]]
+celltype$cell<-cellt
+celltype$treatment<-treatment
+celltype$annot2<-NULL
+seurat_object <- AddMetaData(seurat_object, metadata = celltype)
+
+
+
+#Extract data, phenotype data, and feature data from the SeuratObject
+data <- as(as.matrix(seurat_object@assays$RNA@data), 'sparseMatrix')
+
+pd <- new('AnnotatedDataFrame', data = seurat_object@meta.data)
+
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+
+#Construct monocle cds
+monocle_cds <- newCellDataSet(data,
+                              phenoData = pd,
+                              featureData = fd,
+                              lowerDetectionLimit = 0.5,
+                              expressionFamily = negbinomial.size())
+
+FM <- exprs(monocle_cds)
+monocle_cds@auxOrderingData$normalize_expr_data <- FM
+
+pca_res<- Embeddings(seurat_object, reduction= "pca")
+#PCA
+monocle_cds@normalized_data_projection <- as.matrix(t(pca_res))
+
+
+cds_dims_data<- read.delim("COEMBED_res_CCA_results.UMAP.dims",header=F,row.names=1)
+
+
+
+dim_no<-ncol(cds_dims_data)
+S <- t(cds_dims_data)
+Y <- S
+W <- as.matrix(t(pca_res))
+#(seurat_object$cca.aligned@cell.embeddings)
+A <- S
+colnames(A) <- colnames(monocle_cds)
+colnames(S) <- colnames(monocle_cds)
+colnames(Y) <- colnames(monocle_cds)
+reducedDimA(monocle_cds) <- A
+monocle_cds@reducedDimW<- W
+monocle_cds@reducedDimS <- as.matrix(Y)
+monocle_cds@reducedDimK <- S
+monocle_cds@dim_reduce_type <- "UMAP"
+pData(monocle_cds)$umap_1 = reducedDimA(monocle_cds)[1, ]
+pData(monocle_cds)$umap_2 = reducedDimA(monocle_cds)[2, ]
+if(dim_no==3){
+  pData(monocle_cds)$umap_3 = reducedDimA(monocle_cds)[3, ]
+}
+
+
+saveRDS(monocle_cds,file="coembed_monocle3_format.rds")
+
+cds<-readRDS("coembed_monocle3_format.rds")
+
+cds <- detectGenes(cds)
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)
+
+#lets look at this again
+
+#cluster first
+cds <- clusterCells(cds,verbose = T,num_clusters=10,cores=10)
+#remove outliers of group 4 
+pData(cds)$cell_coor<-pData(cds)$cell
+#change those to HCC1143S so they will not be outlier branches
+pData(cds)$cell_coor[which((pData(cds)$cell=="MDA" | pData(cds)$cell=="SUM"  | pData(cds)$cell=="HCC1806" | pData(cds)$cell=="HCC1143G") & pData(cds)$Cluster==9)]<-"HCC1143S"
+
+
+
+
+
+cds <- suppressWarnings(partitionCells(cds,partition_names ="cell_coor"))
+
+
+
+cds <- learnGraph(cds, max_components = 2, RGE_method = 'SimplePPT', verbose = T,partition_group="cell_coor",prune_graph=T)
+
+
+cds<-orderCells(cds,root_pr_nodes=c("Y_380","Y_54","Y_282","Y_162","Y_499"))
+dp_mst <- minSpanningTree(cds)
+reduced_dim_coords <- reducedDimK(cds)
+ica_space_df <- data.frame(Matrix::t(reduced_dim_coords[1:2,]))
+colnames(ica_space_df) <- c("prin_graph_dim_1", "prin_graph_dim_2")
+ica_space_df$sample_name <- row.names(ica_space_df)
+ica_space_df$sample_state <- row.names(ica_space_df)
+edge_list <- as.data.frame(get.edgelist(dp_mst))
+colnames(edge_list) <- c("source", "target")
+
+edge_df <- merge(ica_space_df, edge_list, by.x = "sample_name",by.y = "source", all = TRUE)
+edge_df <- plyr::rename(edge_df, c(prin_graph_dim_1 = "source_prin_graph_dim_1",prin_graph_dim_2 = "source_prin_graph_dim_2"))
+edge_df <- merge(edge_df, ica_space_df[, c("sample_name","prin_graph_dim_1", "prin_graph_dim_2")],by.x = "target", by.y = "sample_name", all = TRUE)
+edge_df <- plyr::rename(edge_df, c(prin_graph_dim_1 = "target_prin_graph_dim_1",prin_graph_dim_2 = "target_prin_graph_dim_2"))
+write.table(as.matrix(edge_df),file="./monocle3_branchpoints2.txt",col.names=TRUE,row.names=FALSE,sep="\t",quote=FALSE)
+
+p<-plot_cell_trajectory(cds,cell_size=0.1,backbone_color="#000000",color_by = "Cluster",show_state_name=T,alpha=0.3)
+ggsave(plot=p,filename="./monocle3.cluster.plot2.png",width=5,height=4,dpi=900)
+ggsave(plot=p,filename="./monocle3.cluster.plot2.pdf",width=5,height=4)
+
+p<-plot_cell_trajectory(cds,cell_size=0.1,color_by = "cell",backbone_color="#000000",show_state_name=T,alpha=0.3)
+ggsave(plot=p,filename="./monocle3.annot.plot2.png",width=5,height=4,dpi=900)
+ggsave(plot=p,filename="./monocle3.annot.plot2.pdf",width=5,height=4)
+
+p<-plot_cell_trajectory(cds,cell_size=0.1,color_by = "treatment",backbone_color="#000000",show_state_name=T,alpha=0.3)
+ggsave(plot=p,filename="./monocle3.treat.plot2.png",width=5,height=4,dpi=900)
+ggsave(plot=p,filename="./monocle3.treat.plot2.pdf",width=5,height=4)
+
+
+
+p<-ggplot(edge_df,aes(x=source_prin_graph_dim_1,y=source_prin_graph_dim_2,xend=target_prin_graph_dim_1,yend=target_prin_graph_dim_2))+geom_segment()+geom_text(color="red",label=edge_df$sample_name,size=2,check_overlap=TRUE)
+ggsave(plot=p,filename="./monocle3.branchname.plot2.png",width=5,height=4,dpi=900)
+p<-plot_cell_trajectory(cds)
+ggsave(plot=p,filename="./monocle3.ptime.plot2.png",width=5,height=4,dpi=900)
+
+saveRDS(cds,file="coembed_monocle3_res.rds")
+
+library(monocle)
+library(Seurat)
+library(stringr)
+#make cds
+cds <- readRDS(file="coembed_monocle3_res.rds")
+
+
+# writing out final data frames
+write.table(as.matrix(pData(cds)),file="./monocle3_cells.txt",col.names=TRUE,row.names=TRUE,sep="\t",quote=FALSE)
+write.table(as.matrix(Biobase::exprs(cds)),file="./monocle3_aggragated_cells_count.txt",col.names=TRUE,row.names=TRUE,sep="\t",quote=FALSE)
+write.table(as.matrix(fData(cds)),file="./monocle3_features.txt",col.names=TRUE,row.names=FALSE,sep="\t",quote=FALSE)
+
+
+pseudotime<-as.data.frame(pData(cds)$Pseudotime)
+row.names(pseudotime)<-row.names(pData(cds))
+
+
+write.table(as.matrix(pseudotime),file="./pseudotime_final_ATAC_RNA.val",col.names=F,row.names=T,sep="\t",quote=FALSE)
+
+```
+
+
+Do the ordering with RNA
+```{r}
+ibrary(monocle)
+library(Seurat)
+library(stringr)
+#make cds
+#Load Seurat object of combedding
+seurat_object<-readRDS("scRNA_singlet_filt.rds")
+
+cell<-str_split_fixed(seurat_object[["annot"]][,1],"_",2)[,1]
+cell<-gsub("Trametinib","Tram",cell)
+cell<-gsub("HCCMDAMB468","MDA",cell)
+cell<-gsub("SUM149PT","SUM",cell)
+cellt<-str_split_fixed(cell,"_",2)[,1]
+treatment<-str_split_fixed(cell,"_",2)[,2]
+celltype<-seurat_object[["annot"]]
+celltype$cell<-cellt
+celltype$treatment<-treatment
+celltype$annot<-NULL
+seurat_object <- AddMetaData(seurat_object, metadata = celltype)
+
+
+
+#Extract data, phenotype data, and feature data from the SeuratObject
+data <- as(as.matrix(seurat_object@assays$RNA@data), 'sparseMatrix')
+
+pd <- new('AnnotatedDataFrame', data = seurat_object@meta.data)
+
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+
+#Construct monocle cds
+monocle_cds <- newCellDataSet(data,
+                              phenoData = pd,
+                              featureData = fd,
+                              lowerDetectionLimit = 0.5,
+                              expressionFamily = negbinomial.size())
+
+FM <- exprs(monocle_cds)
+monocle_cds@auxOrderingData$normalize_expr_data <- FM
+
+pca_res<- Embeddings(seurat_object, reduction= "pca")
+#PCA
+monocle_cds@normalized_data_projection <- as.matrix(t(pca_res))
+
+
+cds_dims_data<- read.delim("PCA_singlet.proj.UMAP.dims",header=F,row.names=1)
+
+
+
+dim_no<-ncol(cds_dims_data)
+S <- t(cds_dims_data)
+Y <- S
+W <- as.matrix(t(pca_res))
+#(seurat_object$cca.aligned@cell.embeddings)
+A <- S
+colnames(A) <- colnames(monocle_cds)
+colnames(S) <- colnames(monocle_cds)
+colnames(Y) <- colnames(monocle_cds)
+reducedDimA(monocle_cds) <- A
+monocle_cds@reducedDimW<- W
+monocle_cds@reducedDimS <- as.matrix(Y)
+monocle_cds@reducedDimK <- S
+monocle_cds@dim_reduce_type <- "UMAP"
+pData(monocle_cds)$umap_1 = reducedDimA(monocle_cds)[1, ]
+pData(monocle_cds)$umap_2 = reducedDimA(monocle_cds)[2, ]
+if(dim_no==3){
+  pData(monocle_cds)$umap_3 = reducedDimA(monocle_cds)[3, ]
+}
+
+
+saveRDS(monocle_cds,file="Monocle3_justRNA_format.rds")
+
+cds<-monocle_cds
+
+cds <- detectGenes(cds)
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)
+
+#lets look at this again
+
+#cluster first
+cds <- clusterCells(cds,verbose = T,num_clusters=10,cores=10)
+#remove outliers of group 4 
+pData(cds)$cell_coor<-pData(cds)$cell
+#change those to HCC1143S so they will not be outlier branches
+pData(cds)$cell_coor[which((pData(cds)$cell=="MDA" | pData(cds)$cell=="SUM"  | pData(cds)$cell=="HCC1806" | pData(cds)$cell=="HCC1143G") & pData(cds)$Cluster==7)]<-"HCC1143S"
+
+
+cds <- suppressWarnings(partitionCells(cds,partition_names ="cell_coor"))
+cds <- learnGraph(cds, max_components = 2, RGE_method = 'SimplePPT', verbose = T,partition_group="cell_coor",prune_graph=T)
+
+#"Y_440","Y_428"
+cds<-orderCells(cds,root_pr_nodes=c("Y_440","Y_57","Y_168","Y_542","Y_308"))
+dp_mst <- minSpanningTree(cds)
+reduced_dim_coords <- reducedDimK(cds)
+ica_space_df <- data.frame(Matrix::t(reduced_dim_coords[1:2,]))
+colnames(ica_space_df) <- c("prin_graph_dim_1", "prin_graph_dim_2")
+ica_space_df$sample_name <- row.names(ica_space_df)
+ica_space_df$sample_state <- row.names(ica_space_df)
+edge_list <- as.data.frame(get.edgelist(dp_mst))
+colnames(edge_list) <- c("source", "target")
+
+edge_df <- merge(ica_space_df, edge_list, by.x = "sample_name",by.y = "source", all = TRUE)
+edge_df <- plyr::rename(edge_df, c(prin_graph_dim_1 = "source_prin_graph_dim_1",prin_graph_dim_2 = "source_prin_graph_dim_2"))
+edge_df <- merge(edge_df, ica_space_df[, c("sample_name","prin_graph_dim_1", "prin_graph_dim_2")],by.x = "target", by.y = "sample_name", all = TRUE)
+edge_df <- plyr::rename(edge_df, c(prin_graph_dim_1 = "target_prin_graph_dim_1",prin_graph_dim_2 = "target_prin_graph_dim_2"))
+write.table(as.matrix(edge_df),file="./monocle3_scRNA_branchpoints2.txt",col.names=TRUE,row.names=FALSE,sep="\t",quote=FALSE)
+
+p<-plot_cell_trajectory(cds,cell_size=0.1,backbone_color="#000000",color_by = "Cluster",show_state_name=T,alpha=0.3)
+ggsave(plot=p,filename="./monocle3.cluster.plot2.png",width=5,height=4,dpi=900)
+ggsave(plot=p,filename="./monocle3.cluster.plot2.pdf",width=5,height=4)
+
+p<-plot_cell_trajectory(cds,cell_size=0.1,color_by = "cell",backbone_color="#000000",show_state_name=T,alpha=0.3)
+ggsave(plot=p,filename="./monocle3.annot.plot2.png",width=5,height=4,dpi=900)
+ggsave(plot=p,filename="./monocle3.annot.plot2.pdf",width=5,height=4)
+
+p<-plot_cell_trajectory(cds,cell_size=0.1,color_by = "treatment",backbone_color="#000000",show_state_name=T,alpha=0.3)
+ggsave(plot=p,filename="./monocle3.treat.plot2.png",width=5,height=4,dpi=900)
+ggsave(plot=p,filename="./monocle3.treat.plot2.pdf",width=5,height=4)
+
+
+
+p<-ggplot(edge_df,aes(x=source_prin_graph_dim_1,y=source_prin_graph_dim_2,xend=target_prin_graph_dim_1,yend=target_prin_graph_dim_2))+geom_segment()+geom_text(color="red",label=edge_df$sample_name,size=2,check_overlap=TRUE)
+ggsave(plot=p,filename="./monocle3.branchname.plot2.png",width=5,height=4,dpi=900)
+p<-plot_cell_trajectory(cds)
+ggsave(plot=p,filename="./monocle3.ptime.plot2.png",width=5,height=4,dpi=900)
+
+#saveRDS(cds,file="scRNA_ordered_monocle3_res.rds")
+
+library(monocle)
+library(Seurat)
+library(stringr)
+#make cds
+#cds <- readRDS(file="coembed_monocle3_res.rds")
+
+
+# writing out final data frames
+#write.table(as.matrix(pData(cds)),file="./monocle3_cells.txt",col.names=TRUE,row.names=TRUE,sep="\t",quote=FALSE)
+#write.table(as.matrix(Biobase::exprs(cds)),file="./monocle3_aggragated_cells_count.txt",col.names=TRUE,row.names=TRUE,sep="\t",quote=FALSE)
+#write.table(as.matrix(fData(cds)),file="./monocle3_features.txt",col.names=TRUE,row.names=FALSE,sep="\t",quote=FALSE)
+
+
+pseudotime<-as.data.frame(pData(cds)$Pseudotime)
+row.names(pseudotime)<-row.names(pData(cds))
+
+
+write.table(as.matrix(pseudotime),file="./RNA_pseudotime.val",col.names=F,row.names=T,sep="\t",quote=FALSE)
+
+```
+
+
+Do the ordering with ATAC
+```{r}
+suppressWarnings(library(monocle))
+library(stringr)
+message("Loading Monocle3")
+# reading in matrix, annotation, and dimension data
+cds_cell_data <- read.delim("..//cds_cell_data.txt")
+cds_dims_data <- read.table("../cds_dims_data.txt",header=F,row.names=1)
+cds_site_data <- read.delim("../cds_site_data.txt")
+cds_counts_matrix <- read.table("../cds_counts_matrix.txt")
+message("Read in CDS Files.")
+rownames(cds_cell_data)==rownames(cds_dims_data)
+cds_cell_data<-cbind(cds_cell_data,cds_dims_data)
+# generating cell data set
+feature_data <- new("AnnotatedDataFrame", data = cds_site_data)
+sample_data <- new("AnnotatedDataFrame", data = cds_cell_data)
+dimensions_data <- new("AnnotatedDataFrame", data = cds_dims_data)
+cds <- suppressWarnings(newCellDataSet(as.matrix(cds_counts_matrix), phenoData = sample_data, featureData = feature_data))
+set.seed(2017)
+pData(cds)$cells <- NULL
+cds@expressionFamily@vfamily<-"binomialff"
+cds <- detectGenes(cds)
+cds <- estimateSizeFactors(cds)
+#cds <- estimateDispersions(cds)
+FM <- exprs(cds)
+cds@auxOrderingData$normalize_expr_data <- FM
+irlba_pca_res<-t(read.table("../180227_180214.U54.merged.bbrd.q10.5k.filt.500.counts.filt_1000_10.fine.tune.cistopic.matrix",header=T,row.names=1))
+#irlba_pca_res = irlba_pca_res[match(rownames(irlba_pca_res),colnames(cds)),]
+#added in matching, better than match 
+matchnum<-rownames(irlba_pca_res) %in% colnames(cds)
+irlba_pca_res = irlba_pca_res[matchnum,]
+num_dim<-ncol(irlba_pca_res)
+cds@normalized_data_projection <- as.matrix(irlba_pca_res)
+dim_no<-ncol(cds_dims_data)
+S <- t(cds_dims_data)
+Y <- S
+W <- as.matrix(t(irlba_pca_res))
+A <- S
+colnames(A) <- colnames(cds)
+colnames(S) <- colnames(cds)
+colnames(Y) <- colnames(cds)
+reducedDimA(cds) <- A
+cds@reducedDimW<- W
+cds@reducedDimS <- as.matrix(Y)
+cds@reducedDimK <- S
+cds@dim_reduce_type <- "UMAP"
+pData(cds)$umap_1 = reducedDimA(cds)[1, ]
+pData(cds)$umap_2 = reducedDimA(cds)[2, ]
+if(dim_no==3){
+  pData(cds)$umap_3 = reducedDimA(cds)[3, ]
+}
+
+pData(cds)$cell<-str_split_fixed(pData(cds)$timepoint, "_", 3)[,1]
+cds <- clusterCells(cds,verbose = T,num_clusters=6,cores=10)
+pData(cds)$cell_coor<-pData(cds)$cell
+#change cells in cluster to HCC1143S so they will not be outlier branches
+pData(cds)$cell_coor[which((pData(cds)$cell=="MDA" | pData(cds)$cell=="SUM"  | pData(cds)$cell=="HCC1806" | pData(cds)$cell=="HCC1143G") & pData(cds)$Cluster==2)]<-"HCC1143S"
+cds <- suppressWarnings(partitionCells(cds,partition_names ="cell_coor"))
+cds <- learnGraph(cds, max_components = 3, RGE_method = 'DDRTree', verbose = T,partition_group="cell_coor",prune_graph=T)
+#these were the old atac ones
+#start_cells<-c("GAATGAATGCGGTTGGAACATGCGAGGTACTGGTTG","AATACCTGCTGCGGACGTGCGTAAGATGGCTCATAT","AGTCTTAAGCGGTTGGAATGACCATCGACCGTTACT","CGCTCATTCTGCGGACGTTAAGATTATTAACTCATA","ATTACTCGAGGTTGCAAGAGGATAGGTGGCTCATAT")
+start_cells=c("TAATGCGCTGCCTCGCAAAGGATAGGCTCAGAATAA","AATACCTGCCGAAGGTTAGCGTAAGACAGCCATGAT","ATTCAGAATGCGTCTATAACGTCCTGTCTGACGAAC","CGCTCATTTGCCTCGCAACTTCGCCTTTAACTCATA","ATTACTCGGCGGTTGGAAGTCAGTACGCATTAGGCG")
+
+
+
+#first
+#"TAATGCGCTGCCTCGCAAAGGATAGGCTCAGAATAA"
+#"GAATGAATAAGAAGTCTAGCTCCAACGTACTGGTTG"
+#"GAATGAATCCGAAGGTTAGGATTCTCACCATAATAA"
+
+#"AGTCTTAACCGGCTGAGCGCTCCAACGTACTGGTTG"
+#"AGTCTTAATTCCAAGTAATGACCATCTAGTCGGATG"
+#"AGTCTTAATGCCTCGCAATGACCATCTTAACTCATA"
+#"ATTCAGAATGCGTCTATAACGTCCTGTCTGACGAAC"
+
+#"CGCTCATTTGCCTCGCAACTTCGCCTTTAACTCATA"
+#"CGCTCATTGTATCAATATACGTCCTGGACCGTTACT"
+#"CGCTCATTTTATTAAGAATCAGAGCCTTAACTCATA"
+#"CGCTCATTCCGGCTGAGCTAAGATTACTCAGAATAA"
+cds<-orderCells(cds,root_cells=start_cells)
+#I both did analyses where i routed based on nodes and start cells. Values are similar
+cds<-orderCells(cds,orthogonal_proj_tip=TRUE,root_pr_nodes=c("Y_227","Y_33","Y_87","Y_150","Y_291"))
+dp_mst <- minSpanningTree(cds)
+reduced_dim_coords <- reducedDimK(cds)
+ica_space_df <- data.frame(Matrix::t(reduced_dim_coords[1:2,]))
+colnames(ica_space_df) <- c("prin_graph_dim_1", "prin_graph_dim_2")
+ica_space_df$sample_name <- row.names(ica_space_df)
+ica_space_df$sample_state <- row.names(ica_space_df)
+edge_list <- as.data.frame(get.edgelist(dp_mst))
+colnames(edge_list) <- c("source", "target")
+
+edge_df <- merge(ica_space_df, edge_list, by.x = "sample_name",by.y = "source", all = TRUE)
+edge_df <- plyr::rename(edge_df, c(prin_graph_dim_1 = "source_prin_graph_dim_1",prin_graph_dim_2 = "source_prin_graph_dim_2"))
+edge_df <- merge(edge_df, ica_space_df[, c("sample_name","prin_graph_dim_1", "prin_graph_dim_2")],by.x = "target", by.y = "sample_name", all = TRUE)
+edge_df <- plyr::rename(edge_df, c(prin_graph_dim_1 = "target_prin_graph_dim_1",prin_graph_dim_2 = "target_prin_graph_dim_2"))
+write.table(as.matrix(edge_df),file="./monocle3_branchpoints2.txt",col.names=TRUE,row.names=FALSE,sep="\t",quote=FALSE)
+
+p<-plot_cell_trajectory(cds,cell_size=0.1,color_by = "Cluster",backbone_color="#000000",show_state_name=T,alpha=0.3)
+ggsave(plot=p,filename="./monocle3.cluster.plot2.png",width=5,height=4,dpi=900)
+ggsave(plot=p,filename="./monocle3.cluster.plot2.pdf",width=5,height=4)
+
+p<-plot_cell_trajectory(cds,cell_size=0.1,color_by = paste(colnames(pData(cds))[1]),backbone_color="#000000",show_state_name=T,alpha=0.3)
+ggsave(plot=p,filename="./monocle3.annot.plot2.png",width=5,height=4,dpi=900)
+ggsave(plot=p,filename="./monocle3.annot.plot2.pdf",width=5,height=4)
+
+p<-ggplot(edge_df,aes(x=source_prin_graph_dim_1,y=source_prin_graph_dim_2,xend=target_prin_graph_dim_1,yend=target_prin_graph_dim_2))+geom_segment()+geom_text(color="red",label=edge_df$sample_name,size=2,check_overlap=TRUE)
+ggsave(plot=p,filename="./monocle3.branchname.plot2.png",width=5,height=4,dpi=900)
+p<-plot_cell_trajectory(cds)
+ggsave(plot=p,filename="./monocle3.ptime.plot2.png",width=5,height=4,dpi=900)
+
+# writing out final data frames
+#write.table(as.matrix(pData(cds)),file="./monocle3_cells.txt",col.names=TRUE,row.names=TRUE,sep="\t",quote=FALSE)
+#write.table(as.matrix(Biobase::exprs(cds)),file="./monocle3_aggragated_cells_count.txt",col.names=TRUE,row.names=TRUE,sep="\t",quote=FALSE)
+#write.table(as.matrix(fData(cds)),file="./monocle3_features.txt",col.names=TRUE,row.names=FALSE,sep="\t",quote=FALSE)
+pseudotime<-as.data.frame(pData(cds)$Pseudotime)
+row.names(pseudotime)<-row.names(pData(cds))
+write.table(as.matrix(pseudotime),file="./ATAC_pseudotime_final.val",col.names=F,row.names=T,sep="\t",quote=FALSE)
+#this is what worked
+saveRDS(cds,"./save.final_double_check.cds")
+```
+
+
+
+
+
+#comparison analysis
+```{r}
+
+library(ggplot2)
+library(stringr)
+library(ggpubr)
+#ordering where cells are chosen
+#ATAC<-read.delim(file="ATAC.val",header = F)
+#ordering where branches are chosen
+ATAC<-read.delim(file="ATAC_pseudotime_final.val",header = F)
+RNA<-read.delim(file="RNA_pseudotime.val",header = F)
+ATAC_RNA<-read.delim(file="./pseudotime_final_ATAC_RNA.val",header = F)
+annot<-read.delim(file="180227_180214.U54.merged_new.annot",header = F)
+RNA_annot<-read.delim(file="RNA_orig.annot",header = F)
+cells<-str_split_fixed(annot$V2, "_", 3)[,1]
+comparison=data.frame(ATAC=ATAC$V2,Combined=ATAC_RNA$V2[match(ATAC$V1,ATAC_RNA$V1)],annot=annot$V2[match(ATAC$V1,annot$V1)],cell=cells[match(ATAC$V1,annot$V1)])
+row.names(comparison)<-ATAC$V1
+order(ATAC$V2)
+
+plot_list=list()
+for (i in levels(comparison$cell))
+{
+temp<-comparison[which(comparison$cell==paste0(i)),]
+ordered<-order(temp$ATAC)
+final<-cbind(temp[ordered,],ATAC_ordered=1:dim(temp)[1])
+ordered<-order(final$Combined)
+final<-cbind(final[ordered,],Combined_ordered=1:dim(final)[1])
+#print(row.names(final[final$Combined==min(final$Combined),]))
+print(paste0(i))
+print(cor(final$ATAC,final$Combined,method="spearman"))
+p<-ggplot(final,aes(x=Combined,y=ATAC,color=annot))+geom_point()+theme_classic()+scale_colour_manual(values = c("HCC1143G_DMSO" = "#99000d","HCC1143G_Tram" = "#fcbba1","HCC1143S_DMSO" = "#e66101","HCC1143S_Tram" = "#fdb863","HCC1806_DMSO" = "#006d2c","HCC1806_Tram" = "#74c476","MDA_DMSO" = "#045a8d","MDA_Tram" = "#a6bddb","SUM_DMSO" = "#810f7c","SUM_Tram" = "#8c6bb1"))
+plot_list[[paste0(i)]]<-p 
+}
+
+res<-ggarrange(plotlist=plot_list,ncol=2,nrow=3)
+ggsave(res,filename = "Matchup.ATAC.pdf")
+
+ggsave(plot_list[["SUM"]]+theme(legend.position="none"),filename = "Matchup.atac.SUM.pdf",width = 5.5,height = 5.5,units = "cm")
+
+#same RNA
+annot<-RNA_annot
+cells<-str_split_fixed(annot$V2, "_", 3)[,1]
+ATAC<-RNA
+comparison=data.frame(ATAC=ATAC$V2,Combined=ATAC_RNA$V2[match(ATAC$V1,ATAC_RNA$V1)],annot=annot$V2[match(ATAC$V1,annot$V1)],cell=cells[match(ATAC$V1,annot$V1)])
+row.names(comparison)<-ATAC$V1
+order(ATAC$V2)
+plot_list=list()
+for (i in levels(comparison$cell))
+{
+  temp<-comparison[which(comparison$cell==paste0(i)),]
+  ordered<-order(temp$ATAC)
+  final<-cbind(temp[ordered,],ATAC_ordered=1:dim(temp)[1])
+  ordered<-order(final$Combined)
+  final<-cbind(final[ordered,],Combined_ordered=1:dim(final)[1])
+  #print(row.names(final[final$Combined==min(final$Combined),]))
+  print(paste0(i))
+  print(cor(final$ATAC,final$Combined,method="spearman"))
+  p<-ggplot(final,aes(x=Combined,y=ATAC,color=annot))+geom_point()+ylab("RNA")+theme_classic()+scale_colour_manual(values = c("HCC1143G_DMSO" = "#8c510a","HCC1143G_Trametinib" = "#bf812d","HCC1143S_DMSO" = "#dfc27d","HCC1143S_Trametinib" = "#f6e8c3","HCC1806_DMSO" = "#4d9221","HCC1806_Trametinib" = "#c7e9b4","HCCMDAMB468_DMSO" = "#35978f","HCCMDAMB468_Trametinib" = "#41b6c4","SUM149PT_DMSO" = "#c51b7d","SUM149PT_Trametinib" = "#de77ae"))
+  plot_list[[paste0(i)]]<-p +theme(legend.position="none")
+}
+
+res<-ggarrange(plotlist=plot_list,ncol=2,nrow=3)
+ggsave(res,filename = "Matchup.RNA.pdf")
+
+ggsave(plot_list[["SUM149PT"]],filename = "Matchup.rna.SUM.pdf",width = 5.5,height = 5.5,units = "cm")
+
+```
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

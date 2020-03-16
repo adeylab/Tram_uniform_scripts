@@ -1,0 +1,1911 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+
+
+```{r}
+library("dplyr")
+library("Matrix")
+library("Seurat")
+library(stringr)
+library(MASS)
+library(ggplot2)
+ library(mixtools)
+
+
+# Load the Pool1 dataset
+POOL1 <- Read10X_h5("/home/groups/oroaklab/adey_lab/projects/M2CH/180227_180214.U54.merged/scRNA/fastq/190604_D00735_0333_ACDMH2ANXX/Aligned/CEL190418JG_Pool_1/outs/filtered_feature_bc_matrix.h5")
+# Load the Pool2 dataset
+POOL2 <- Read10X_h5("/home/groups/oroaklab/adey_lab/projects/M2CH/180227_180214.U54.merged/scRNA/fastq/190604_D00735_0333_ACDMH2ANXX/Aligned/CEL190418JG_Pool_2/outs/filtered_feature_bc_matrix.h5")
+
+
+#First get the right celline conditions from h5s
+
+SHan1<-POOL1$`Antibody Capture`[c(1,2,4,5),]
+
+g<-as.matrix(SHan1[,colSums(SHan1)>0])
+M<-as.matrix(rbind(colSums(SHan1[,colSums(SHan1)>0]),colSums(SHan1[,colSums(SHan1)>0]),colSums(SHan1[,colSums(SHan1)>0]),colSums(SHan1[,colSums(SHan1)>0])))
+
+f<-colSums(g/M*log(g/M),na.rm = T)*-(1)
+f1<-as.data.frame(f)
+
+
+
+p<-ggplot(f1,aes(x=f))+geom_histogram()+theme_bw()
+ggsave(file="geom_hist1b.pdf",p)
+
+Shan1<-g[,f<0.5]
+Shan1 <- as(Shan1, "dgCMatrix")
+
+
+#select cells that have less high entropy
+sel<-apply(Shan1,2,function(x){row.names(Shan1)[which.max(x)]})
+
+sel_annot=data.frame(cell=names(sel),all=sel)
+sel_annot$annot<-str_split_fixed(sel_annot$all, "-", 2)[,1]
+#is it really max
+#g[,which.max(f)]
+
+
+#create an annot file 
+
+annot_POOL1<-sel_annot
+annot_POOL1$Pool<-rep("POOL1",times=dim(annot_POOL1)[1])
+
+#unique(annot_POOL1$cell)
+#select 
+select_cells<-match(annot_POOL1$cell,colnames(POOL1$'Gene Expression'))
+
+#make gene expression matrix
+
+POOL1_sel<-POOL1$'Gene Expression'[,select_cells]
+
+
+
+#same thing for POOL 2
+
+
+#First get the right celline conditions from h5s
+
+SHan2<-POOL2$`Antibody Capture`[c(1,2,4,5,7,8),]
+
+g<-as.matrix(SHan2[,colSums(SHan2)>0])
+M<-as.matrix(rbind(colSums(SHan2[,colSums(SHan2)>0]),colSums(SHan2[,colSums(SHan2)>0]),colSums(SHan2[,colSums(SHan2)>0]),colSums(SHan2[,colSums(SHan2)>0]),colSums(SHan2[,colSums(SHan2)>0]),colSums(SHan2[,colSums(SHan2)>0])))
+
+
+f<-colSums(g/M*log(g/M),na.rm = T)*-(1)
+f2<-as.data.frame(f)
+
+
+p<-ggplot(f2,aes(x=f))+geom_histogram()+theme_bw()
+ggsave(file="geom_hist2.pdf",p)
+
+Shan2<-g[,f<0.5]
+Shan2 <- as(Shan2, "dgCMatrix")
+
+#select cells that have less high entropy
+sel<-apply(Shan2,2,function(x){row.names(Shan2)[which.max(x)]})
+
+sel_annot=data.frame(cell=names(sel),all=sel)
+sel_annot$annot<-str_split_fixed(sel_annot$all, "-", 2)[,1]
+#is it really max
+#g[,which.max(f)]
+
+annot_POOL2<-sel_annot
+annot_POOL2$Pool<-rep("POOL2",times=dim(annot_POOL2)[1])
+
+#make gene expression matrix
+select_cells2<-match(annot_POOL2$cell,colnames(POOL2$'Gene Expression'))
+
+#make gene expression matrix
+
+POOL2_sel<-POOL2$'Gene Expression'[,select_cells2]
+
+
+dim(POOL1_sel)
+dim(POOL2_sel)
+dim(annot_POOL1)
+row.names(annot_POOL1)<-annot_POOL1$cell
+row.names(annot_POOL2)<-annot_POOL2$cell
+all_annots<-rbind(annot_POOL1,annot_POOL2)
+
+
+S1 <- CreateSeuratObject(counts = POOL1_sel,min.cells = 3, min.features = 200,project = "ScRNA_P1")
+
+S1$Pool<-annot_POOL1$Pool[match(row.names(S1[[]]),row.names(annot_POOL1))]
+S1$annot<-annot_POOL1$annot[match(row.names(S1[[]]),row.names(annot_POOL1))]
+
+S2 <- CreateSeuratObject(counts = POOL2_sel,min.cells = 3, min.features = 200,project ="ScRNA_P2")
+S2$Pool<-annot_POOL2$Pool[match(row.names(S2[[]]),row.names(annot_POOL2))]
+S2$annot<-annot_POOL2$annot[match(row.names(S2[[]]),row.names(annot_POOL2))]
+
+
+
+all_merged<-merge(S1,S2)
+```
+
+```{r}
+#up until here I did my own dehashing, downstream analysis is the same. I used a shannon entropy with a cutoff to identify cells that received multiple hashes
+#Seurat has its own dehashing so I will impement that
+
+# Add HTO data as a new assay independent from RNA
+library("dplyr")
+library("Matrix")
+library("Seurat")
+library(stringr)
+
+library(ggplot2)
+
+
+# Load the Pool1 dataset
+POOL1 <- Read10X_h5("/home/groups/oroaklab/adey_lab/projects/M2CH/180227_180214.U54.merged/scRNA/fastq/190604_D00735_0333_ACDMH2ANXX/Aligned/CEL190418JG_Pool_1/outs/filtered_feature_bc_matrix.h5")
+# Load the Pool2 dataset
+POOL2 <- Read10X_h5("/home/groups/oroaklab/adey_lab/projects/M2CH/180227_180214.U54.merged/scRNA/fastq/190604_D00735_0333_ACDMH2ANXX/Aligned/CEL190418JG_Pool_2/outs/filtered_feature_bc_matrix.h5")
+
+# Setup Seurat object
+
+pool1.hashtag <- CreateSeuratObject(counts = POOL1$'Gene Expression',project = "ScRNA_P1")
+
+
+# Normalize RNA data with log normalization
+pool1.hashtag <- NormalizeData(pool1.hashtag)
+# Find and scale variable features
+pool1.hashtag <- FindVariableFeatures(pool1.hashtag, selection.method = "mean.var.plot")
+pool1.hashtag <- ScaleData(pool1.hashtag, features = VariableFeatures(pool1.hashtag))
+pool1.htos <-POOL1$`Antibody Capture`[c(1,2,4,5),]
+pool1.hashtag[["HTO"]] <- CreateAssayObject(counts = pool1.htos)
+# Normalize HTO data, here we use centered log-ratio (CLR) transformation
+pool1.hashtag <- NormalizeData(pool1.hashtag, assay = "HTO", normalization.method = "CLR")
+pool1.hashtag <- HTODemux(pool1.hashtag, assay = "HTO", positive.quantile = 0.99)
+
+# Global classification results
+table(pool1.hashtag$HTO_classification.global)
+
+
+# Group cells based on the max HTO signal
+pdf(file="HTO_signal_pool1.pdf",height=10,width=20)
+Idents(pool1.hashtag) <- "HTO_maxID"
+RidgePlot(pool1.hashtag, assay = "HTO", features = rownames(pool1.hashtag[["HTO"]])[1:2], ncol = 2)
+dev.off()
+
+
+# signlets vs doublets etc.
+pdf(file="Doublet_singlet_pool1_signal1.pdf",height=10,width=20)
+Idents(pool1.hashtag) <- "HTO_classification.global"
+VlnPlot(pool1.hashtag, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+dev.off()
+
+
+
+#we need to select for singlets and ones that represent on type of cell then pool2 and merge
+
+# First, we will remove negative cells from the object
+pool1.hashtag.subset <- subset(pool1.hashtag, idents = "Negative", invert = TRUE)
+
+# Calculate a distance matrix using HTO
+hto.dist.mtx <- as.matrix(dist(t(GetAssayData(object = pool1.hashtag.subset, assay = "HTO"))))
+
+# Calculate tSNE embeddings with a distance matrix
+
+pdf(file="Doublet_singlet_pool1_signal1.pdf",height=10,width=20)
+pool1.hashtag.subset <- RunTSNE(pool1.hashtag.subset, distance.matrix = hto.dist.mtx, perplexity = 100)
+DimPlot(pool1.hashtag.subset)
+dev.off()
+
+#are there any batch effects
+# To increase the efficiency of plotting, you can subsample cells using the num.cells argument
+pdf(file="Batcheff_pool1_heatmap.pdf",height=10,width=20)
+HTOHeatmap(pool1.hashtag, assay = "HTO", ncells = 5000)
+dev.off()
+
+# Extract the singlets
+pool1.singlet <- subset(pool1.hashtag, idents = "Singlet")
+
+# Select the top 1000 most variable features
+pool1.singlet <- FindVariableFeatures(pool1.singlet, selection.method = "mean.var.plot")
+
+# Scaling RNA data, we only scale the variable features here for efficiency
+pool1.singlet <- ScaleData(pool1.singlet, features = VariableFeatures(pool1.singlet))
+
+# Run PCA
+pool1.singlet <- RunPCA(pool1.singlet, features = VariableFeatures(pool1.singlet))
+
+
+# We select the top 10 PCs for clustering and tSNE based on PCElbowPlot
+pool1.singlet <- FindNeighbors(pool1.singlet, reduction = "pca", dims = 1:10)
+pool1.singlet <- FindClusters(pool1.singlet, resolution = 0.6)
+
+
+pool1.singlet <- RunTSNE(pool1.singlet, reduction = "pca", dims = 1:10)
+
+pdf(file="Tags_pool1_tsne.pdf",height=10,width=20)
+# Projecting singlet identities on TSNE visualization
+DimPlot(pool1.singlet, group.by = "HTO_classification")
+dev.off()
+
+```
+
+```{r}
+library("dplyr")
+library("Matrix")
+library("Seurat")
+library(stringr)
+library(MASS)
+library(ggplot2)
+
+
+# Load the Pool1 dataset
+POOL1 <- Read10X_h5("/home/groups/oroaklab/adey_lab/projects/M2CH/180227_180214.U54.merged/scRNA/fastq/190604_D00735_0333_ACDMH2ANXX/Aligned/CEL190418JG_Pool_1/outs/filtered_feature_bc_matrix.h5")
+# Load the Pool2 dataset
+POOL2 <- Read10X_h5("/home/groups/oroaklab/adey_lab/projects/M2CH/180227_180214.U54.merged/scRNA/fastq/190604_D00735_0333_ACDMH2ANXX/Aligned/CEL190418JG_Pool_2/outs/filtered_feature_bc_matrix.h5")
+
+# Setup Seurat object
+
+pool2.hashtag <- CreateSeuratObject(counts = POOL2$'Gene Expression',project = "ScRNA_P1")
+
+
+# Normalize RNA data with log normalization
+pool2.hashtag <- NormalizeData(pool2.hashtag)
+# Find and scale variable features
+pool2.hashtag <- FindVariableFeatures(pool2.hashtag, selection.method = "mean.var.plot")
+pool2.hashtag <- ScaleData(pool2.hashtag, features = VariableFeatures(pool2.hashtag))
+pool2.htos <-POOL2$`Antibody Capture`[c(1,2,4,5,7,8),]
+pool2.hashtag[["HTO"]] <- CreateAssayObject(counts = pool2.htos)
+# Normalize HTO data, here we use centered log-ratio (CLR) transformation
+pool2.hashtag <- NormalizeData(pool2.hashtag, assay = "HTO", normalization.method = "CLR")
+pool2.hashtag <- HTODemux(pool2.hashtag, assay = "HTO", positive.quantile = 0.99)
+
+# Global classification results
+table(pool2.hashtag$HTO_classification.global)
+
+
+# Group cells based on the max HTO signal
+pdf(file="HTO_signal_pool2.pdf",height=10,width=20)
+Idents(pool2.hashtag) <- "HTO_maxID"
+RidgePlot(pool2.hashtag, assay = "HTO", features = rownames(pool2.hashtag[["HTO"]])[1:2], ncol = 2)
+dev.off()
+
+
+# signlets vs doublets etc.
+pdf(file="Doublet_singlet_pool2_signal1.pdf",height=10,width=20)
+Idents(pool2.hashtag) <- "HTO_classification.global"
+VlnPlot(pool2.hashtag, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+dev.off()
+
+
+
+#we need to select for singlets and ones that represent on type of cell then pool2 and merge
+
+# First, we will remove negative cells from the object
+pool2.hashtag.subset <- subset(pool2.hashtag, idents = "Negative", invert = TRUE)
+
+# Calculate a distance matrix using HTO
+hto.dist.mtx <- as.matrix(dist(t(GetAssayData(object = pool2.hashtag.subset, assay = "HTO"))))
+
+# Calculate tSNE embeddings with a distance matrix
+
+pdf(file="Doublet_singlet_pool2_signal1.pdf",height=10,width=20)
+pool2.hashtag.subset <- RunTSNE(pool2.hashtag.subset, distance.matrix = hto.dist.mtx, perplexity = 100)
+DimPlot(pool2.hashtag.subset)
+dev.off()
+
+#are there any batch effects
+# To increase the efficiency of plotting, you can subsample cells using the num.cells argument
+pdf(file="Batcheff_pool2_heatmap.pdf",height=10,width=20)
+HTOHeatmap(pool2.hashtag, assay = "HTO", ncells = 5000)
+dev.off()
+
+# Extract the singlets
+pool2.singlet <- subset(pool2.hashtag, idents = "Singlet")
+
+# Select the top 1000 most variable features
+pool2.singlet <- FindVariableFeatures(pool2.singlet, selection.method = "mean.var.plot")
+
+# Scaling RNA data, we only scale the variable features here for efficiency
+pool2.singlet <- ScaleData(pool2.singlet, features = VariableFeatures(pool2.singlet))
+
+# Run PCA
+pool2.singlet <- RunPCA(pool2.singlet, features = VariableFeatures(pool2.singlet))
+
+
+# We select the top 10 PCs for clustering and tSNE based on PCElbowPlot
+pool2.singlet <- FindNeighbors(pool2.singlet, reduction = "pca", dims = 1:10)
+pool2.singlet <- FindClusters(pool2.singlet, resolution = 0.6)
+
+
+pool2.singlet <- RunTSNE(pool2.singlet, reduction = "pca", dims = 1:10)
+
+pdf(file="Tags_pool2_tsne.pdf",height=10,width=20)
+# Projecting singlet identities on TSNE visualization
+DimPlot(pool2.singlet, group.by = "HTO_classification")
+dev.off()
+```
+
+
+```{r}
+#match and combine pool1 pool2 
+
+
+
+pool1.singlet$annot<-paste(str_split_fixed(pool1.singlet$HTO_classification, "-", 7)[,2],str_split_fixed(pool1.singlet$HTO_classification, "-", 7)[,3],sep ="_")
+
+pool2.singlet$annot<-paste(str_split_fixed(pool2.singlet$HTO_classification, "-", 7)[,2],str_split_fixed(pool2.singlet$HTO_classification, "-", 7)[,3],sep ="_")
+
+all_merged<-merge(pool1.singlet,pool2.singlet)
+
+
+all_annots<-data.frame(annot=all_merged$annot,cell=str_split_fixed(all_merged$annot,"_",2)[,1],treat=str_split_fixed(all_merged$annot,"_",2)[,2])
+
+saveRDS(all_merged,file="scRNA_singlet.rds")
+
+```
+
+
+
+```{r}
+#Let us do a comparison
+shannont<-rbind(f1,f2)
+write.table(shannont,"shannot.val",row.names=T,col.names=F,sep="\t",quote=F)
+out<- Embeddings(all_merged, reduction= "tsne")
+write.table(out,"Tsne_singlet.proj.dims",row.names=T,col.names=F,sep="\t",quote=F)
+
+
+
+# I propose addding extra shannon entropy filter
+
+
+#do distibution
+p<-ggplot(shannont,aes(x=f))+geom_histogram()+geom_density()+theme_bw()
+ggsave(file="geom_hist_combined_shannon.pdf",p)
+
+#fit mixed model
+
+# bimodal fit
+km <- kmeans(shannont,centers=2)
+clustr <- as.factor(km$cluster)
+data_1<-data.frame("f"=shannont,"km"=clustr)
+lowest_cluster<-which.min(km$centers)
+highest_cluster<-which.max(km$centers)
+second<-km$center[-highest_cluster,1]
+cluster_top<-data_1$f[which(data_1$km==lowest_cluster)]
+
+
+#in case the groups seperate we do normal fit
+fit <- fitdistr(cluster_top, "normal")
+para <- fit$estimate
+threshold_final_1=para[1]+1.96*para[1]
+
+#in case 2 groups do not sepearte well do a mixed model instead of normal
+MMS<-normalmixEM(shannont$f,maxrestarts=1000,maxit = 10000)
+threshold_final_2 =MMS$mu[1]+1.96*MMS$sigma[1]
+
+
+p1<-ggplot(data_1, aes(x=data_1$f)) + geom_histogram(aes(fill=data_1$km,y=..count../sum(..count..)),color="grey50")+ylab("Density")+stat_density(geom="line",color="red")+geom_vline(xintercept = threshold_final_1)+xlab("Shannon entropy")+theme_bw()+theme(legend.background=element_blank(),text =element_text(size=10),legend.title=element_blank())
+ggsave(p1,filename = "SHannon_entropy.f.dist.threshold_normal.pdf")
+ggsave(p1,filename = "SHannon_entropy.f.dist.threshold_normal.png")
+
+
+shannont$filter<-shannont$f<threshold_final_1
+names(shannont)<-c("shannon","filter")
+#add filter classification
+
+all_merged<-AddMetaData(all_merged, metadata = shannont)
+
+
+# Extract the singlets
+all_merged <- subset(all_merged, subset = filter == "TRUE")
+
+
+
+```
+
+
+
+```{r}
+
+ # mito
+
+all_merged[["percent.mt"]] <- PercentageFeatureSet(all_merged, pattern = "^MT-")
+
+
+
+# Visualize QC metrics as a violin plot
+pdf(file="Features_singlet_filt.pdf")
+VlnPlot(all_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+dev.off()
+
+
+plot1 <- FeatureScatter(all_merged, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(all_merged, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+pdf(file="Features2_singlet_filt.pdf")
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+#subset
+all_merged <- subset(all_merged, subset = nFeature_RNA > 200 & nFeature_RNA < 8000 & percent.mt < 25)
+
+all_merged <- NormalizeData(all_merged)
+
+all_merged<- FindVariableFeatures(all_merged, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures( all_merged), 10)
+
+# plot variable features with and without labels
+pdf(file="Top_var_singlet_filt.pdf")
+plot1 <- VariableFeaturePlot(all_merged)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+saveRDS(all_merged,file="scRNA_singlet_filt.rds")
+
+#trysctransform
+
+# run sctransform
+all_merged<- SCTransform(all_merged, vars.to.regress = c("percent.mt"), verbose = FALSE)
+#all_merged <- ScaleData(all_merged, vars.to.regress = "percent.mt")
+# These are now standard steps in the Seurat workflow for visualization and clustering
+all_merged<- RunPCA(all_merged, verbose = FALSE)
+
+#Jackstraw
+all_merged <- JackStraw(all_merged, num.replicate = 100)
+all_merged <- ScoreJackStraw(all_merged, dims = 1:20)
+pdf(file="Jackstraw.pdf")
+JackStrawPlot(all_merged, dims = 1:20)
+dev.off()
+
+pdf(file="Elbow_plot.pdf")
+ElbowPlot(all_merged,ndims = 50)
+dev.off()
+
+
+
+out<- Embeddings(all_merged, reduction= "pca")
+write.table(out,"PCA_singlet.proj.dims",row.names=T,col.names=T,sep="\t",quote=F)
+
+#ran umap so can read in again
+
+
+library(umap)
+all_merged<- RunTSNE(all_merged, dims = 1:50, verbose = FALSE)
+
+all_merged<- FindNeighbors(all_merged, dims = 1:30, verbose = FALSE)
+all_merged<- FindClusters(all_merged, verbose = FALSE)
+pdf(file="Plot_singlet_filt_tsne.pdf")
+DimPlot(all_merged, label = TRUE) + NoLegend()
+dev.off()
+
+
+
+
+
+saveRDS(all_merged,file="scRNA_singlet_filt.rds")
+Idents(object = all_merged) <- all_merged[["annot"]]
+
+
+
+pdf(file="RNA_seq_res_singlet_filt.pdf")
+DimPlot(all_merged, label = TRUE) + NoLegend()
+dev.off()
+
+saveRDS(all_merged,file="scRNA_singlet_filt.rds")
+
+#find all markers
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+all_merged.markers <- FindAllMarkers(all_merged, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+all_merged.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC)
+
+write.table(all_merged.markers,"Cluster_markers_all.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+top10 <- all_merged.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+
+pdf(file="RNA_seq_Markers_singlet_filt.pdf",height = 20, width = 20)
+DoHeatmap(all_merged, features = top10$gene) + NoLegend()
+dev.off()
+saveRDS(all_merged,file="scRNA_singlet_filt.rds")
+
+
+
+```
+
+
+```{r}
+#now let us do all of the comparisons within cell lines
+
+
+
+cluster_MDA.markers <- FindMarkers(all_merged, ident.1 = "HCCMDAMB468_Trametinib", ident.2 = "HCCMDAMB468_DMSO" , min.pct =0.25)
+head(cluster_MDA.markers, n = 5)
+
+
+write.table(cluster_MDA.markers,"Cluster_markers_MDA_DMOSVSTRAM.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+
+cluster_SUM.markers <- FindMarkers(all_merged, ident.1 = "SUM149PT_Trametinib", ident.2 = "SUM149PT_DMSO" , min.pct =0.25)
+head(cluster_SUM.markers, n = 5)
+
+write.table(cluster_SUM.markers,"Cluster_markers_SUM_DMOSVSTRAM.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+
+cluster_HCC1806.markers <- FindMarkers(all_merged, ident.1 = "HCC1806_Trametinib", ident.2 = "HCC1806_DMSO" , min.pct =0.25)
+head(cluster_HCC1806.markers, n = 5)
+
+write.table(cluster_HCC1806.markers,"Cluster_markers_HCC1806_DMOSVSTRAM.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+
+cluster_HCC1143G.markers <- FindMarkers(all_merged, ident.1 = "HCC1143G_Trametinib", ident.2 = "HCC1143G_DMSO" , min.pct =0.25)
+head(cluster_HCC1143G.markers, n = 5)
+
+write.table(cluster_HCC1143G.markers,"Cluster_markers_HCC1143G_DMOSVSTRAM.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+cluster_HCC1143S.markers <- FindMarkers(all_merged, ident.1 = "HCC1143S_Trametinib", ident.2 = "HCC1143S_DMSO" , min.pct =0.25)
+head(cluster_HCC1143S.markers, n = 5)
+
+
+
+write.table(cluster_HCC1143S.markers,"Cluster_markers_HCC1143S_DMOSVSTRAM.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+```
+
+
+```{r}
+library("Seurat")
+all_merged<-readRDS("scRNA_singlet_filt.rds")
+#lets see whether cell cycle matters
+cycle<-read.delim("Cell_cycle_final.txt")
+s.genes <- cycle$G1.S
+g2m.genes <- cycle$G2.M
+
+RunPCA(all_merged, features = VariableFeatures(all_merged), ndims.print= 1:10, nfeatures.print = 10)
+#possibly lets classify
+
+
+
+# view cell cycle scores and phase assignments
+head(all_merged[[]])
+
+Idents(object = all_merged) <- all_merged[["annot"]]
+
+#plot phase
+pdf(file="Plot_singlet_tsne_cellname_filt.pdf")
+DimPlot(all_merged, label = F) 
+dev.off()
+
+
+plot1<-DimPlot(all_merged, label = F) 
+all_merged <- CellCycleScoring(all_merged, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+
+#plot phase
+pdf(file="Plot_singlet_tsne_phase_filt.pdf")
+DimPlot(all_merged, label = F) 
+dev.off()
+plot2<-DimPlot(all_merged, label = F) 
+
+#plot phase
+pdf(file="Plot_singlet_tsne_phase_cell_filt_combo.pdf",height = 10,width=20)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+
+all_merged2 <- ScaleData(all_merged, vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(all_merged))
+
+# Now, a PCA on the variable genes no longer returns components associated with cell cycle
+all_merged2 <- RunPCA(all_merged2, features = VariableFeatures(all_merged2), nfeatures.print = 10)
+
+all_merged2<- RunTSNE(all_merged2, dims = 1:30, verbose = FALSE)
+
+saveRDS(all_merged2,file="scRNA_singlet_phase_filt.rds")
+
+Idents(object = all_merged2) <- all_merged2[["annot"]]
+
+#plot phase
+pdf(file="Plot_singlet_tsne_cellname_filt_regressed_out.pdf")
+DimPlot(all_merged2, label = F) 
+dev.off()
+
+
+plot1<-DimPlot(all_merged2, label = F) 
+all_merged2 <- R
+
+
+
+
+
+#plot phase
+pdf(file="Plot_singlet_tsne_phase_filt_cellcycle_regressed_out.pdf")
+DimPlot(all_merged2, label = F) 
+dev.off()
+plot2<-DimPlot(all_merged2, label = F) 
+
+#plot phase
+pdf(file="Plot_singlet_tsne_phase_cell_filt_combo_cellcycle_regressed_out.pdf",height = 10,width=20)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+
+saveRDS(all_merged2,file="scRNA_singlet_phase_filt.rds")
+
+Idents(object = all_merged2) <- all_merged2[["annot"]]
+
+#now lets do markers where the phase was removed
+
+cluster_MDA.markers <- FindMarkers(all_merged2, ident.1 = "HCCMDAMB468_Trametinib", ident.2 = "HCCMDAMB468_DMSO" , min.pct =0.25)
+head(cluster_MDA.markers, n = 5)
+
+
+write.table(cluster_MDA.markers,"Cluster_markers_MDA_DMOSVSTRAM_CPregout.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+
+cluster_SUM.markers <- FindMarkers(all_merged2, ident.1 = "SUM149PT_Trametinib", ident.2 = "SUM149PT_DMSO" , min.pct =0.25)
+head(cluster_SUM.markers, n = 5)
+
+write.table(cluster_SUM.markers,"Cluster_markers_SUM_DMOSVSTRAM_CPregout.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+
+cluster_HCC1806.markers <- FindMarkers(all_merged2, ident.1 = "HCC1806_Trametinib", ident.2 = "HCC1806_DMSO" , min.pct =0.25)
+head(cluster_HCC1806.markers, n = 5)
+
+write.table(cluster_HCC1806.markers,"Cluster_markers_HCC1806_DMOSVSTRAM_CPregout.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+
+cluster_HCC1143G.markers <- FindMarkers(all_merged2, ident.1 = "HCC1143G_Trametinib", ident.2 = "HCC1143G_DMSO" , min.pct =0.25)
+head(cluster_HCC1143G.markers, n = 5)
+
+write.table(cluster_HCC1143S.markers,"Cluster_markers_HCC1143S_DMOSVSTRAM_CPregout.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+cluster_HCC1143S.markers <- FindMarkers(all_merged2, ident.1 = "HCC1143S_Trametinib", ident.2 = "HCC1143S_DMSO" , min.pct =0.25)
+head(cluster_HCC1143S.markers, n = 5)
+
+write.table(cluster_HCC1143G.markers,"Cluster_markers_HCC1143G_DMOSVSTRAM_CPregout.txt",sep="\t",col.names = T,row.names = T,quote = F)
+
+
+
+
+
+
+
+```
+
+
+
+#now let us try seeing shared responses cell type specific responses
+
+
+```{r}
+library(Seurat)
+library(cowplot)
+library(umap)
+
+
+
+all_merged<-readRDS(file="scRNA_singlet_filt.rds")
+sep<-all_merged[["annot"]]
+#with prec it was 2,3
+cell<-str_split_fixed(sep[,1], "_", 3)[,1]
+cond<-str_split_fixed(sep[,1], "_", 3)[,2]
+all_merged$cell<-cell
+all_merged$treat<-cond
+
+#control object
+
+ctrl <- subset(all_merged, subset = treat == "DMSO")
+ctrl$stim <- "DMSO"
+ctrl <- NormalizeData(ctrl, verbose = FALSE)
+ctrl <- FindVariableFeatures(ctrl, selection.method = "vst", nfeatures = 2000)
+
+# Set up stimulated object
+stim <- subset(all_merged, subset = treat == "Trametinib")
+stim$stim <- "Trametinib"
+stim <- NormalizeData(stim, verbose = FALSE)
+stim <- FindVariableFeatures(stim, selection.method = "vst", nfeatures = 2000)
+
+#combine
+all.anchors <- FindIntegrationAnchors(object.list = list(ctrl, stim), dims = 1:20)
+all.combined <- IntegrateData(anchorset = all.anchors, dims = 1:20)
+
+
+DefaultAssay(all.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+all.combined <- ScaleData(all.combined, verbose = FALSE)
+all.combined <- RunPCA(all.combined, npcs = 30, verbose = FALSE)
+# tSNE and Clustering
+all.combined <- RunTSNE(all.combined, reduction = "pca", dims = 1:20)
+all.combined <- FindNeighbors(all.combined, reduction = "pca", dims = 1:20)
+all.combined <- FindClusters(all.combined, resolution = 0.5)
+
+saveRDS(all.combined,file="scRNA_integrated_singlet_filt.rds")
+
+# Visualization
+p1 <- DimPlot(all.combined, reduction = "tsne", group.by = "stim")
+p2 <- DimPlot(all.combined, reduction = "tsne", label = TRUE)
+pdf(file="RNA_seq_intgerated_tsne_singlet_filt.pdf",width=20,height = 20)
+plot_grid(p1, p2)
+dev.off()
+
+
+Idents(object = all.combined) <- all.combined[["cell"]]
+
+# Visualization
+p1 <- DimPlot(all.combined, reduction = "tsne", group.by = "stim")
+p2 <- DimPlot(all.combined, reduction = "tsne", label = TRUE)
+pdf(file="RNA_seq_intgerated_tsne2_singlet_filt.pdf",width=20,height = 20)
+plot_grid(p1, p2)
+dev.off()
+
+
+
+
+#lets see what are independent of cell line markers
+
+Idents(object = all.combined) <- all.combined[["treat"]]
+Tram.response <- FindMarkers(all.combined, ident.1 = "DMSO", ident.2 = "Trametinib", verbose = FALSE)
+head(Tram.response, n = 15)
+
+
+Idents(object = all.combined) <- all.combined[["cell"]]
+
+pdf(file="Shared_markers_intgerated_dotplot_singlet_filt.pdf",width=20,height = 20)
+markers.to.plot <- row.names(Tram.response)
+DotPlot(all.combined, features = rev(markers.to.plot), cols = c("blue", "red"), dot.scale = 8, split.by = "stim") + RotatedAxis()
+dev.off()
+
+
+
+pdf(file="Example1.pdf",width=5,height = 5)
+FeaturePlot(all.combined, features = c("KRT81", "CCND1"), split.by = "stim", max.cutoff = 3,
+    cols = c("grey", "red"))
+dev.off()
+
+pdf(file="Example2.pdf",width=5,height = 5)
+plots <- VlnPlot(all.combined, features = c("KRT81", "CCND1"), split.by = "stim", group.by = "cell", 
+    pt.size = 0, combine = FALSE)
+CombinePlots(plots = plots, ncol = 1)
+dev.off()
+
+write.table(Tram.response,file="uniform_change_genes.txt",sep="\t",quote=F,row.names = T,col.names = T)
+
+
+top11dmsogenes<-read.table("Top10DMSOassociatedgenes.txt")
+pdf(file="DMSO_specific_markers_intgerated_dotplot_singlet_filt.pdf",width=20,height = 20)
+markers.to.plot <- top11dmsogenes$V1
+DotPlot(all.combined, features = rev(markers.to.plot), cols = c("blue", "red"), dot.scale = 8, split.by = "stim") + RotatedAxis()
+dev.off()
+
+
+
+
+saveRDS(all.combined,file="scRNA_integrated_singlet_filt.rds")
+
+```
+
+
+
+```{r}
+#look at genes unique to DMSO states chose not to include HCC1143S due to small number of
+all_merged<-readRDS(file="scRNA_singlet_filt.rds")
+library(Seurat)
+Idents(object = all_merged)
+cluster_HCC1143GDMSO.markers <- FindMarkers(all_merged, ident.1 = "HCC1143G_DMSO", ident.2 = c("HCC1806_DMSO", "HCCMDAMB468_DMSO","SUM149PT_DMSO"),  min.pct =0.25)
+
+write.table(cluster_HCC1143GDMSO.markers,file="DMSO_specific_genes_HCC1143.txt",sep="\t",quote=F,,row.names = T,col.names = T)
+
+
+cluster_HCC1806DMSO.markers <- FindMarkers(all_merged, ident.1 = "HCC1806_DMSO", ident.2 = c("HCC1143G_DMSO", "HCCMDAMB468_DMSO","SUM149PT_DMSO"),  min.pct =0.25)
+
+
+write.table(cluster_HCC1806DMSO.markers,file="DMSO_specific_genes_HCC1806.txt",sep="\t",quote=F,row.names = T,col.names = T)
+
+cluster_SUM149PTDMSO.markers <- FindMarkers(all_merged, ident.1 = "SUM149PT_DMSO", ident.2 = c("HCC1143G_DMSO", "HCCMDAMB468_DMSO","HCC1806_DMSO"),  min.pct =0.25)
+
+write.table(cluster_SUM149PTDMSO.markers,file="DMSO_specific_genes_SUM149PT.txt",sep="\t",quote=F,row.names = T,col.names = T)
+
+cluster_HCCMDAMB468_DMSO.markers <- FindMarkers(all_merged, ident.1 = "HCCMDAMB468_DMSO", ident.2 = c("HCC1143G_DMSO", "HCC1806_DMSO","SUM149PT_DMSO"),  min.pct =0.25)
+
+write.table(cluster_HCCMDAMB468_DMSO.markers,file="DMSO_specific_genes_HCCMDAMB468.txt",sep="\t",quote=F,row.names = T,col.names = T)
+
+#just as extra, large overlap
+cluster_HCC1143SDMSO.markers <- FindMarkers(all_merged, ident.1 = "HCC1143S_DMSO", ident.2 = c("HCC1806_DMSO", "HCCMDAMB468_DMSO","SUM149PT_DMSO"),  min.pct =0.25)
+
+write.table(cluster_HCC1143SDMSO.markers,file="DMSO_specific_genes_HCC1143S.txt",sep="\t",quote=F,,row.names = T,col.names = T)
+
+
+cluster_MDA.markers <- FindMarkers(all_merged, ident.1 = "HCCMDAMB468_Trametinib", ident.2 = "HCCMDAMB468_DMSO" , min.pct =0.25)
+head(cluster_MDA.markers, n = 5)
+
+
+cluster_SUM.markers <- FindMarkers(all_merged, ident.1 = "SUM149PT_Trametinib", ident.2 = "SUM149PT_DMSO" , min.pct =0.25)
+head(cluster_SUM.markers, n = 5)
+
+
+cluster_HCC1806.markers <- FindMarkers(all_merged, ident.1 = "HCC1806_Trametinib", ident.2 = "HCC1806_DMSO" , min.pct =0.25)
+head(cluster_HCC1806.markers, n = 5)
+
+
+cluster_HCC1143G.markers <- FindMarkers(all_merged, ident.1 = "HCC1143G_Trametinib", ident.2 = "HCC1143G_DMSO" , min.pct =0.25)
+head(cluster_HCC1143G.markers, n = 5)
+
+
+```
+
+
+
+
+
+
+```{r}
+#uniformity analysis
+library(Seurat)
+library(cowplot)
+library(reshape2)
+library("EnhancedVolcano")
+all_merged<-readRDS(file="scRNA_singlet_filt.rds")
+
+#when done with scTransform or traditional normalization we have the same results
+#DefaultAssay(all_merged) <- "RNA"
+Idents(object = all_merged)
+HCCMDAMB468<-read.delim("DMSO_specific_genes_HCCMDAMB468.txt")
+SUM149PT<-read.delim("DMSO_specific_genes_SUM149PT.txt")
+HCC1143G<-read.delim("DMSO_specific_genes_HCC1143.txt")
+HCC1806<-read.delim("DMSO_specific_genes_HCC1806.txt")
+HCC1143S<-read.delim("DMSO_specific_genes_HCC1143S.txt")
+
+HCCMDAMB468$log2FoldChange<- HCCMDAMB468$avg_logFC/log(2)
+SUM149PT$log2FoldChange<- SUM149PT$avg_logFC/log(2)
+HCC1143S$log2FoldChange<- HCC1143S$avg_logFC/log(2)
+HCC1143G$log2FoldChange<- HCC1143G$avg_logFC/log(2)
+HCC1806$log2FoldChange<- HCC1806$avg_logFC/log(2)
+
+pdf("HCC1806_DMSO_unique_include00115.pdf",width=5,height = 5)
+  EnhancedVolcano(HCC1806,
+    lab = rownames(HCC1806),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'HCC1806 DMSO specific genes',
+    pCutoff = 0.01,
+    FCcutoff = 1.5,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+
+
+
+
+pdf("HCC1143G_DMSO_unique_include.pdf",width=5,height = 5)
+  EnhancedVolcano(HCC1143G,
+    lab = rownames(HCC1143G),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'HCC1143G DMSO specific genes',
+    pCutoff = 0.01,
+    FCcutoff = 1.5,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+
+
+pdf("HCC1143S_DMSO_unique_include.pdf",width=5,height = 5)
+  EnhancedVolcano(HCC1143S,
+    lab = rownames(HCC1143S),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'HCC1143S DMSO specific genes',
+    pCutoff = 0.01,
+    FCcutoff = 1.5,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+
+
+
+pdf("SUM149PT_DMSO_unique_include.pdf",width=5,height = 5)
+  EnhancedVolcano(SUM149PT,
+    lab = rownames(SUM149PT),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'SUM149PT DMSO specific genes',
+    pCutoff = 0.01,
+    FCcutoff = 1.5,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+
+
+pdf("HCCMDAMB468_DMSO_unique_include.pdf",width=5,height = 5)
+  EnhancedVolcano(HCCMDAMB468,
+    lab = rownames(HCCMDAMB468),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'HCCMDAMB468 DMSO specific genes',
+    pCutoff = 0.01,
+    FCcutoff = 1.5,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+
+
+
+#this is the p adjusted 0.01 log2>1.5
+pass_SUM149PT<-SUM149PT[which((SUM149PT$log2FoldChange >1.5 | SUM149PT$log2FoldChange < -1.5) & SUM149PT$p_val_adj<0.01),]
+pass_HCCMDAMB468<-HCCMDAMB468[which((HCCMDAMB468$log2FoldChange >1.5 | HCCMDAMB468$log2FoldChange < -1.5) & HCCMDAMB468$p_val_adj<0.01),]
+pass_HCC1143S<-HCC1143S[which((HCC1143S$log2FoldChange >1.5 | HCC1143S$log2FoldChange < -1.5) & HCC1143S$p_val_adj<0.01),]
+pass_HCC1143G<-HCC1143G[which((HCC1143G$log2FoldChange >1.5 | HCC1143G$log2FoldChange < -1.5) & HCC1143G$p_val_adj<0.01),]
+pass_HCC1806<-HCC1806[which((HCC1806$log2FoldChange >1.5 | HCC1806$log2FoldChange < -1.5) & HCC1806$p_val_adj<0.01),]
+
+#this is the 0.05 p>1
+#pass_HCC1806<-HCC1806[which((HCC1806$log2FoldChange >1 | HCC1806$log2FoldChange < -1) & HCC1806$p_val_adj<0.01),]
+#pass_SUM149PT<-SUM149PT[which((SUM149PT$log2FoldChange >1 | SUM149PT$log2FoldChange < -1) & SUM149PT$p_val_adj<0.01),]
+#pass_HCCMDAMB468<-HCCMDAMB468[which((HCCMDAMB468$log2FoldChange >1 | HCCMDAMB468$log2FoldChange < -1) & HCCMDAMB468$p_val_adj<0.01),]
+#pass_HCC1143G<-HCC1143G[which((HCC1143G$log2FoldChange >1 | HCC1143G$log2FoldChange < -1) & HCC1143G$p_val_adj<0.01),]
+
+
+
+pass_unique_genes<-unique(c(row.names(pass_HCC1806),row.names(pass_HCC1143G),row.names(pass_HCCMDAMB468),row.names(pass_SUM149PT)))
+
+all_DMSO <- subset(all_merged, idents= c("SUM149PT_DMSO","HCC1806_DMSO","HCCMDAMB468_DMSO","HCC1143G_DMSO"))
+all_Tram<-subset(all_merged, idents= c("SUM149PT_Trametinib","HCC1806_Trametinib","HCCMDAMB468_Trametinib","HCC1143G_Trametinib"))
+#all_DMSO <-SCTransform(all_DMSO, vars.to.regress = c("percent.mt"), verbose = FALSE)
+#all_Tram <-SCTransform(all_Tram, vars.to.regress = c("percent.mt"), verbose = FALSE)
+#all_DMSO <- NormalizeData(all_DMSO)
+#all_Tram <- NormalizeData(all_Tram)
+all_DMSO<- FindVariableFeatures(all_DMSO)
+all_Tram<- FindVariableFeatures(all_Tram)
+
+pdf(file="Variable_features_compare.pdf",width=20,height = 20)
+# plot variable features with and without labels
+p1 <- VariableFeaturePlot(all_DMSO)
+plot1 <- LabelPoints(plot = p1, points = pass_unique_genes, repel = TRUE)
+p2 <- VariableFeaturePlot(all_Tram)
+plot2 <- LabelPoints(plot = p2, points = pass_unique_genes, repel = TRUE)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+
+#All genes var standardized
+DMSOall <- HVFInfo(all_DMSO)$variance.standardized
+Tramall <- HVFInfo(all_Tram)$variance.standardized
+#select unique gees
+DMSO<-HVFInfo(all_DMSO)[match(pass_unique_genes,row.names(HVFInfo(all_DMSO))),]$variance.standardized
+Tram <-HVFInfo(all_Tram)[match(pass_unique_genes,row.names(HVFInfo(all_Tram))),]$variance.standardized
+
+#modify to include Tram vs DMSO
+All<-HVFInfo(all_DMSO)
+All$Type<-rep("DMSO",time=dim(All)[1])
+AllT<-HVFInfo(all_Tram)
+AllT$Type<-rep("Tram",time=dim(All)[1])
+All<-rbind(All,AllT)
+DMSO_sel<-HVFInfo(all_DMSO)[match(pass_unique_genes,row.names(HVFInfo(all_DMSO))),]
+DMSO_sel$Type<-rep("DMSO",time=dim(DMSO_sel)[1])
+Tram_sel<-HVFInfo(all_Tram)[match(pass_unique_genes,row.names(HVFInfo(all_Tram))),]
+Tram_sel$Type<-rep("Tram",time=dim(Tram_sel)[1])
+All_sel<-rbind(DMSO_sel,Tram_sel)
+
+#a plot of variance as rug for select genes and distribution for all genes
+p<-ggplot(All,aes(x=log10(variance.standardized)))+geom_density()+geom_rug(data=All_sel, inherit.aes = T)+facet_wrap(~Type,dir = "v")+ scale_fill_grey()+theme_bw()
+p
+
+#same for mean
+p2<-ggplot(All,aes(y=log10(variance.standardized),x=log10(mean),color=Type))+geom_point()+geom_density2d(data=All_sel, inherit.aes = T)+ scale_fill_grey()+theme_bw()
+p2
+
+names(DMSO_sel)<-c("x1","var1","y1","T1")
+names(Tram_sel)<-c("x2","var2","y2","T2")
+All_sel_wide<-cbind(DMSO_sel,Tram_sel)
+All_sel_wide$x2-All_sel_wide$x1
+All_sel_wide$y2-All_sel_wide$y1
+
+labels<-All_sel_wide[match(c("MMP1","VIM","KRT17"),row.names(All_sel_wide)),]
+
+
+p3<-ggplot(All_sel,aes(y=log10(variance.standardized),x=log10(mean),color=Type))+geom_point()+geom_density2d()+
+ 
+#  geom_segment(aes(x=log10(x1),y=log10(y1),xend=log10(x2),yend=log10(y2)),data=All_sel_wide,inherit.aes = F)+
+  geom_segment(aes(x=log10(median(All_sel_wide$x1)),xend=log10(median(All_sel_wide$x2)),y=log10(median(All_sel_wide$y1)),yend=log10(median(All_sel_wide$y2))),arrow = arrow(length = unit(0.03, "npc")),inherit.aes = F)+scale_fill_grey()+theme_classic()
+p4<-p3 +geom_segment(data=labels,aes(x=log10(x1),xend=log10(x2),y=log10(y1),yend=log10(y2)),inherit.aes = F)+geom_text(data = labels,aes(x=log10(x1),y=log10(y1),label=rownames(labels)),inherit.aes = F)
+
+ggsave(p4,file="Uniform_dist_plot_0.115.pdf",width=7,height=5)
+
+
+#varcomb<-rbind(data.frame(value=DMSOall,group=rep("DMSO_all",times=length(DMSOall))),data.frame(value=Tramall,group=rep("Tram_all",times=length(Tramall))),data.frame(value=DMSO,group=rep("DMSO",times=length(DMSO))),data.frame(value=Tram,group=rep("Tram",times=length(Tram))))
+
+varianceall<-data.frame(DMSO=DMSOall,Tram=Tramall)
+variance<-data.frame(DMSO=DMSO,Tram=Tram)
+varpall<-melt(varianceall)
+varpall$group<-paste0(rep("all genes",times=length(varpall))," ",varpall$variable)
+varp<-melt(variance)
+varp$group<-paste0(rep("Cell line specific genes",times=length(varp))," ",varp$variable)
+varcomb<-rbind(varp,varpall)
+
+
+p<-ggplot(varcomb,aes(x=group,y=value,fill=group))+geom_violin(trim=FALSE,position=position_dodge(1)) +ylab("Standardized variance")+xlab("")+ scale_fill_grey()+theme_classic()
+p<-p+ geom_boxplot(width=0.1,fill="white",position=position_dodge(1))
+ggsave(p,file="Uniform.var.nolog.pdf",width=7,height=7)
+
+p<-ggplot(varcomb,aes(x=group,y=log(value),fill=group))+geom_violin(trim=FALSE,position=position_dodge(1)) +ylab("log(Standardized variance)")+xlab("")+ scale_fill_grey()+theme_classic()
+p<-p+ geom_boxplot(width=0.1,fill="white",position=position_dodge(1))
+ggsave(p,file="Uniform.var.with_norm_with_SCT.log.pdf",width=7,height=7)
+
+
+#same with average expression
+DMSOall <- HVFInfo(all_DMSO)$mean
+Tramall <- HVFInfo(all_Tram)$mean
+
+DMSO<-HVFInfo(all_DMSO)[match(pass_unique_genes,row.names(HVFInfo(all_DMSO))),]$mean
+Tram <-HVFInfo(all_Tram)[match(pass_unique_genes,row.names(HVFInfo(all_Tram))),]$mean
+
+
+#mcomb<-rbind(data.frame(value=DMSOall,group=rep("DMSO_all",times=length(DMSOall))),data.frame(value=Tramall,group=rep("Tram_all",times=length(Tramall))),data.frame(value=DMSO,group=rep("DMSO",times=length(DMSO))),data.frame(value=Tram,group=rep("Tram",times=length(Tram))))
+
+meanall<-data.frame(DMSO=DMSOall,Tram=Tramall)
+mean<-data.frame(DMSO=DMSO,Tram=Tram)
+mpall<-melt(meanall)
+mpall$group<-paste0(rep("all genes",times=length(mpall))," ",mpall$variable)
+mp<-melt(mean)
+mp$group<-paste0(rep("Cell line specific genes",times=length(mp))," ",mp$variable)
+mcomb<-rbind(mp,mpall)
+
+
+p<-ggplot(mcomb,aes(x=group,y=log(value),fill=group))+geom_violin(trim=FALSE,position=position_dodge(1)) +ylab("log(Mean average expression)")+xlab("")+ scale_fill_grey()+theme_bw()
+p<-p+ geom_boxplot(width=0.1,fill="white",position=position_dodge(1))
+ggsave(p,file="Uniform.m._norm_with_SCT.pdf",width=10,height=5)
+
+t.test(varpall$value~varpall$variable)
+wilcox.test(varpall$value~varpall$variable)
+t.test(varp$value~varp$variable)
+wilcox.test(varp$value~varp$variable)
+
+
+t.test(mpall$value~mpall$variable)
+wilcox.test(mpall$value~mpall$variable)
+t.test(mp$value~mp$variable)
+wilcox.test(mp$value~mp$variable)
+
+HVFInfo(all_DMSO)[match(pass_unique_genes,row.names(HVFInfo(all_DMSO))),]$variance.standardized
+
+#print out homogenization example
+top5=pass_unique_genes[ head(order( Tram-DMSO),n=10)]
+library(stringr)
+library(Seurat)
+library(cowplot)
+library(umap)
+library(reshape2)
+library("EnhancedVolcano")
+all_merged<-readRDS(file="scRNA_singlet_filt.rds")
+secondary<-str_split_fixed(all_merged[["annot"]]$annot,"_",2)
+colnames(secondary)<-c("cell","treat")
+rownames(secondary)<-rownames(all_merged[["annot"]])
+all_merged<-AddMetaData(all_merged,secondary,c("cell","treat"))
+UMAP<-read.delim("PCA_singlet.proj.UMAP.dims",header = F,row.names = 1)
+row.names(UMAP)<-gsub("\\.","-",row.names(UMAP))
+colnames(UMAP) <- paste0("umap_", 1:2)
+
+all_merged[["umap"]]<-CreateDimReducObject(embeddings =as.matrix(UMAP),key = "umap_",assay = DefaultAssay(all_merged))
+
+
+
+pdf(file="Example2.pdf",width=5,height = 25)
+plots <- VlnPlot(all_merged, features = top5, split.by = "treat", group.by = "cell", 
+    pt.size = 0, combine = FALSE)
+CombinePlots(plots = plots, ncol = 1)
+dev.off()
+
+pdf(file="Example1.pdf",width=10,height = 15)
+FeaturePlot(all_merged, features = top5, split.by = "treat", max.cutoff = 3,
+    cols = c("grey", "red"))
+dev.off()
+
+
+pdf(file="Example2.pdf",width=8,height = 15)
+plots <- VlnPlot(all_merged, features = c("MMP1","KRT17","VIM","LANCL2"), split.by = "treat", group.by = "cell", 
+    pt.size = 0, combine = FALSE)
+CombinePlots(plots = plots, ncol = 1)
+dev.off()
+
+
+
+p<-FeaturePlot(all_merged, features = c("MMP1"), split.by = "treat", max.cutoff = 3,
+    cols = c("grey", "red"))
+ggsave(p,file="Example1_MMP1.png",width=7,height = 3,dpi = 300)
+
+
+
+p<-FeaturePlot(all_merged, features = c("KRT17"), split.by = "treat", max.cutoff = 3,
+    cols = c("grey", "red"))
+
+ggsave(p,file="Example1_KRT17.png",width=7,height = 3, dpi = 300)
+
+p<-FeaturePlot(all_merged, features = c("VIM"), split.by = "treat", max.cutoff = 3,
+    cols = c("grey", "red"))
+ggsave(p,file="Example1_VIM.png",width=7,height = 3,dpi = 300)
+
+library(stringr)
+library(Seurat)
+library(cowplot)
+library(umap)
+library(reshape2)
+library("EnhancedVolcano")
+
+#do same with activity
+ATAC.data<-readRDS("cicero.gene_acitivity_matrixunnorm.rds")
+ATAC.datam <-read.table("180227_180214.U54.merged.bbrd.q10.5k.filt.500.counts.filt_1000_10.matrix",sep="\t",header=T)
+
+ATAC.annot<-read.table("./180227_180214.U54.merged_new.annot",header=F)
+row.names(ATAC.annot)<-ATAC.annot$V1
+ATAC.annot.sel<-ATAC.annot[row.names(ATAC.annot) %in% colnames(ATAC.data), ]
+ATAC.datam<-ATAC.datam[,names(ATAC.datam) %in% colnames(ATAC.data)]
+all.atac <- CreateSeuratObject(counts = ATAC.datam, assay = "ATAC",meta.data =ATAC.annot.sel)
+all.atac[["ACTIVITY"]] <- CreateAssayObject(counts = ATAC.data)
+all.atac$tech <- "atac"
+#process activity
+DefaultAssay(all.atac) <- "ACTIVITY"
+all.atac <- FindVariableFeatures(all.atac)
+all.atac <- NormalizeData(all.atac)
+all.atac <- ScaleData(all.atac)
+
+secondary<-str_split_fixed(ATAC.annot.sel$V2,"_",2)
+colnames(secondary)<-c("cell","treat")
+rownames(secondary)<-rownames(ATAC.annot.sel)
+all.atac<-AddMetaData(all.atac,secondary,c("cell","treat"))
+
+pdf(file="Exampleactivity.pdf",width=8,height = 15)
+plots <- VlnPlot(all.atac, features = c("KRT16","S100A9","KRT14","VIM", "LANCL2"), split.by = "treat", group.by = "cell", 
+    pt.size = 0, combine = FALSE)
+CombinePlots(plots = plots, ncol = 1)
+dev.off()
+
+pdf(file="EGR_activity.pdf",width=5,height = 5)
+plots <- VlnPlot(all.atac, features = c("EGR1"), split.by = "treat", group.by = "cell", 
+    pt.size = 0, combine = FALSE)
+dev.off()
+
+
+
+#what if we do the same global analysis with the atac activity
+
+HCCMDAMB468<-read.delim("DMSO_specific_genes_HCCMDAMB468.txt")
+SUM149PT<-read.delim("DMSO_specific_genes_SUM149PT.txt")
+HCC1143G<-read.delim("DMSO_specific_genes_HCC1143.txt")
+HCC1806<-read.delim("DMSO_specific_genes_HCC1806.txt")
+HCC1806$log2FoldChange<- HCC1806$avg_logFC/log(2)
+pass_HCC1806<-HCC1806[which((HCC1806$log2FoldChange >1.5 | HCC1806$log2FoldChange < -1.5) & HCC1806$p_val_adj<0.01),]
+SUM149PT$log2FoldChange<- SUM149PT$avg_logFC/log(2)
+pass_SUM149PT<-SUM149PT[which((SUM149PT$log2FoldChange >1.5 | SUM149PT$log2FoldChange < -1.5) & SUM149PT$p_val_adj<0.01),]
+HCCMDAMB468$log2FoldChange<- HCCMDAMB468$avg_logFC/log(2)
+pass_HCCMDAMB468<-HCCMDAMB468[which((HCCMDAMB468$log2FoldChange >1.5 | HCCMDAMB468$log2FoldChange < -1.5) & HCCMDAMB468$p_val_adj<0.01),]
+HCC1143G$log2FoldChange<- HCC1143G$avg_logFC/log(2)
+pass_HCC1143G<-HCC1143G[which((HCC1143G$log2FoldChange >1.5 | HCC1143G$log2FoldChange < -1.5) & HCC1143G$p_val_adj<0.01),]
+
+
+Idents(all.atac)<-'V2'
+all_DMSO <- subset(all.atac, idents= c("SUM_DMSO","HCC1806_DMSO","MDA_DMSO","HCC1143G_DMSO"))
+all_Tram<-subset(all.atac, idents= c("SUM_Tram","HCC1806_Tram","MDA_Tram","MDA_Tram"))
+
+all_DMSO <- NormalizeData(all_DMSO)
+
+all_DMSO<- FindVariableFeatures(all_DMSO)
+all_Tram <- NormalizeData(all_Tram)
+
+all_Tram<- FindVariableFeatures(all_Tram)
+
+
+pass_unique_genes<-unique(c(row.names(pass_HCC1806),row.names(pass_HCC1143G),row.names(pass_HCCMDAMB468),row.names(pass_SUM149PT)))
+
+DMSOall <- HVFInfo(all_DMSO)$variance.standardized
+Tramall <- HVFInfo(all_Tram)$variance.standardized
+
+DMSO<-HVFInfo(all_DMSO)[match(pass_unique_genes,row.names(HVFInfo(all_DMSO))),]$variance.standardized
+Tram <-HVFInfo(all_Tram)[match(pass_unique_genes,row.names(HVFInfo(all_Tram))),]$variance.standardized
+varianceall<-data.frame(DMSO=DMSOall,Tram=Tramall)
+variance<-data.frame(DMSO=DMSO,Tram=Tram)
+varpall<-melt(varianceall)
+varpall$group<-paste0(rep("all genes",times=length(varpall))," ",varpall$variable)
+varp<-melt(variance)
+varp$group<-paste0(rep("Cell line specific genes",times=length(varp))," ",varp$variable)
+varcomb<-rbind(varp,varpall)
+
+
+p<-ggplot(varcomb,aes(x=group,y=value,fill=group))+geom_violin(trim=FALSE,position=position_dodge(1)) +ylab("Standardized variance")+xlab("")+ scale_fill_grey()+theme_classic()
+p<-p+ geom_boxplot(width=0.1,fill="white",position=position_dodge(1))
+ggsave(p,file="Uniform.var.activity.nolog.pdf",width=7,height=7)
+
+p<-ggplot(varcomb,aes(x=group,y=log(value),fill=group))+geom_violin(trim=FALSE,position=position_dodge(1)) +ylab("log(Standardized variance)")+xlab("")+ scale_fill_grey()+theme_classic()
+p<-p+ geom_boxplot(width=0.1,fill="white",position=position_dodge(1))
+ggsave(p,file="Uniform.var.activity.log.pdf",width=7,height=7)
+
+
+#same with average expression
+DMSOall <- HVFInfo(all_DMSO)$mean
+Tramall <- HVFInfo(all_Tram)$mean
+
+DMSO<-HVFInfo(all_DMSO)[match(pass_unique_genes,row.names(HVFInfo(all_DMSO))),]$mean
+Tram <-HVFInfo(all_Tram)[match(pass_unique_genes,row.names(HVFInfo(all_Tram))),]$mean
+meanall<-data.frame(DMSO=DMSOall,Tram=Tramall)
+mean<-data.frame(DMSO=DMSO,Tram=Tram)
+mpall<-melt(meanall)
+mpall$group<-paste0(rep("all genes",times=length(mpall))," ",mpall$variable)
+mp<-melt(mean)
+mp$group<-paste0(rep("Cell line specific genes",times=length(mp))," ",mp$variable)
+mcomb<-rbind(mp,mpall)
+
+
+p<-ggplot(mcomb,aes(x=group,y=log(value),fill=group))+geom_violin(trim=FALSE,position=position_dodge(1)) +ylab("log(Mean average expression)")+xlab("")+ scale_fill_grey()+theme_bw()
+p<-p+ geom_boxplot(width=0.1,fill="white",position=position_dodge(1))
+ggsave(p,file="Uniform.m.acticviry.pdf",width=10,height=5)
+
+```
+
+
+
+
+#print out expression vs variance analysis
+```{r}
+#internal heterogeneity
+library(Seurat)
+library(cowplot)
+library(reshape2)
+library(stringr)
+library("EnhancedVolcano")
+
+all_merged<-readRDS(file="scRNA_singlet_filt.rds")
+sep<-all_merged[["annot"]]
+#with prec it was 2,3
+cell<-str_split_fixed(sep[,1], "_", 3)[,1]
+cond<-str_split_fixed(sep[,1], "_", 3)[,2]
+all_merged$cell<-cell
+all_merged$treat<-cond
+
+  
+all_merged <- FindVariableFeatures(all_merged, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(all_merged), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(all_merged)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+CombinePlots(plots = list(plot1, plot2))
+  
+  
+
+all_DMSO <- subset(all_merged, idents= c("SUM149PT_DMSO","HCC1806_DMSO","HCCMDAMB468_DMSO","HCC1143G_DMSO","HCC1143S_DMSO"))
+all_Tram<-subset(all_merged, idents= c("SUM149PT_Trametinib","HCC1806_Trametinib","HCCMDAMB468_Trametinib","HCC1143G_Trametinib","HCC1143S_Trametinib"))
+
+#all_DMSO <- NormalizeData(all_DMSO)
+
+all_DMSO<- FindVariableFeatures(all_DMSO)
+top10D <- head(VariableFeatures(all_DMSO), 10)
+# plot variable features with and without labels
+plot1D <- VariableFeaturePlot(all_DMSO)
+plot2D <- LabelPoints(plot = plot1D, points = top10D, repel = TRUE)
+CombinePlots(plots = list(plot1D, plot2D))
+ 
+#all_Tram <- NormalizeData(all_Tram)
+
+all_Tram<- FindVariableFeatures(all_Tram)
+top10T <- head(VariableFeatures(all_Tram), 10)
+# plot variable features with and without labels
+plot1T <- VariableFeaturePlot(all_Tram)
+plot2T <- LabelPoints(plot = plot1T, points = top10T, repel = TRUE)
+CombinePlots(plots = list(plot1T, plot2T))
+
+pdf("AVG_expr_vs_st_var.pdf",width = 16,height=8)
+CombinePlots(plots = list(plot2D, plot2T))
+dev.off()
+
+pdf(file="Example_DMSO.pdf",width=8,height = 30)
+plots <- VlnPlot(all_merged, features = top10D, split.by = "treat", group.by = "cell", pt.size = 0, combine = FALSE)
+CombinePlots(plots = plots, ncol = 1)
+dev.off()
+
+pdf(file="Example_Tram.pdf",width=8,height = 30)
+plots <- VlnPlot(all_merged, features = top10T, split.by = "treat", group.by = "cell", pt.size = 0, combine = FALSE)
+CombinePlots(plots = plots, ncol = 1)
+dev.off()
+
+
+
+#DefaultAssay(all_merged) <- "RNA"
+#get all info
+SUM_DMSO <- subset(all_merged, idents= c("SUM149PT_DMSO"))
+SUM_Tram<-subset(all_merged, idents= c("SUM149PT_Trametinib"))
+#SUM_DMSO <- NormalizeData(SUM_DMSO)
+SUM_DMSO<- FindVariableFeatures(SUM_DMSO)
+#SUM_Tram <- NormalizeData(SUM_Tram)
+SUM_Tram<- FindVariableFeatures(SUM_Tram)
+MDA_DMSO <- subset(all_merged, idents= c("HCCMDAMB468_DMSO"))
+MDA_Tram<-subset(all_merged, idents= c("HCCMDAMB468_Trametinib"))
+#MDA_DMSO <- NormalizeData(MDA_DMSO)
+MDA_DMSO<- FindVariableFeatures(MDA_DMSO)
+#MDA_Tram <- NormalizeData(MDA_Tram)
+MDA_Tram<- FindVariableFeatures(MDA_Tram)
+HCC1143S_DMSO <- subset(all_merged, idents= c("HCC1143S_DMSO"))
+HCC1143S_Tram<-subset(all_merged, idents=c("HCC1143S_Trametinib"))
+#HCC1143S_DMSO <- NormalizeData(HCC1143S_DMSO)
+HCC1143S_DMSO<- FindVariableFeatures(HCC1143S_DMSO)
+#HCC1143S_Tram <- NormalizeData(HCC1143S_Tram)
+HCC1143S_Tram<- FindVariableFeatures(HCC1143S_Tram)
+HCC1143G_DMSO <- subset(all_merged, idents= c("HCC1143G_DMSO"))
+HCC1143G_Tram<-subset(all_merged, idents=c("HCC1143G_Trametinib"))
+#HCC1143G_DMSO <- NormalizeData(HCC1143G_DMSO)
+HCC1143G_DMSO<- FindVariableFeatures(HCC1143G_DMSO)
+#HCC1143G_Tram <- NormalizeData(HCC1143G_Tram)
+HCC1143G_Tram<- FindVariableFeatures(HCC1143G_Tram)
+HCC1806_DMSO <- subset(all_merged, idents= c("HCC1806_DMSO"))
+HCC1806_Tram<-subset(all_merged, idents=c("HCC1806_Trametinib"))
+#HCC1806_DMSO <- NormalizeData(HCC1806_DMSO)
+HCC1806_DMSO<- FindVariableFeatures(HCC1806_DMSO)
+#HCC1806_Tram <- NormalizeData(HCC1806_Tram)
+HCC1806_Tram<- FindVariableFeatures(HCC1806_Tram)
+
+genes_num=length(HVFInfo(SUM_DMSO)$variance.standardized)
+SUM_D_var_internal<-data.frame(Variance=HVFInfo(SUM_DMSO)$variance.standardized,cell=rep("SUM",times=genes_num),treat=rep("DMSO",times=genes_num))
+SUM_T_var_internal<-data.frame(Variance=HVFInfo(SUM_Tram)$variance.standardized,cell=rep("SUM",times=genes_num),treat=rep("Tram",times=genes_num))
+SUM_var_internal<-rbind(SUM_D_var_internal,SUM_T_var_internal)
+MDA_D_var_internal<-data.frame(Variance=HVFInfo(MDA_DMSO)$variance.standardized,cell=rep("MDA",times=genes_num),treat=rep("DMSO",times=genes_num))
+MDA_T_var_internal<-data.frame(Variance=HVFInfo(MDA_Tram)$variance.standardized,cell=rep("MDA",times=genes_num),treat=rep("Tram",times=genes_num))
+MDA_var_internal<-rbind(MDA_D_var_internal,MDA_T_var_internal)
+HCC1806_D_var_internal<-data.frame(Variance=HVFInfo(HCC1806_DMSO)$variance.standardized,cell=rep("HCC1806",times=genes_num),treat=rep("DMSO",times=genes_num))
+HCC1806_T_var_internal<-data.frame(Variance=HVFInfo(HCC1806_Tram)$variance.standardized,cell=rep("HCC1806",times=genes_num),treat=rep("Tram",times=genes_num))
+HCC1806_var_internal<-rbind(HCC1806_D_var_internal,HCC1806_T_var_internal)
+HCC1143G_D_var_internal<-data.frame(Variance=HVFInfo(HCC1143G_DMSO)$variance.standardized,cell=rep("HCC1143G",times=genes_num),treat=rep("DMSO",times=genes_num))
+HCC1143G_T_var_internal<-data.frame(Variance=HVFInfo(HCC1143G_Tram)$variance.standardized,cell=rep("HCC1143G",times=genes_num),treat=rep("Tram",times=genes_num))
+HCC1143G_var_internal<-rbind(HCC1143G_D_var_internal,HCC1143G_T_var_internal)
+HCC1143S_D_var_internal<-data.frame(Variance=HVFInfo(HCC1143S_DMSO)$variance.standardized,cell=rep("HCC1143S",times=genes_num),treat=rep("DMSO",times=genes_num))
+HCC1143S_T_var_internal<-data.frame(Variance=HVFInfo(HCC1143S_Tram)$variance.standardized,cell=rep("HCC1143S",times=genes_num),treat=rep("Tram",times=genes_num))
+HCC1143S_var_internal<-rbind(HCC1143S_D_var_internal,HCC1143S_T_var_internal)
+
+All_var_internal<-rbind(HCC1143G_var_internal,HCC1143S_var_internal,HCC1806_var_internal,MDA_var_internal,SUM_var_internal)
+
+
+library(ggplot2)
+
+GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin, 
+                           draw_group = function(self, data, ..., draw_quantiles = NULL) {
+  data <- transform(data, xminv = x - violinwidth * (x - xmin), xmaxv = x + violinwidth * (xmax - x))
+  grp <- data[1, "group"]
+  newdata <- plyr::arrange(transform(data, x = if (grp %% 2 == 1) xminv else xmaxv), if (grp %% 2 == 1) y else -y)
+  newdata <- rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
+  newdata[c(1, nrow(newdata) - 1, nrow(newdata)), "x"] <- round(newdata[1, "x"])
+
+  if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) {
+    stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <=
+      1))
+    quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
+    aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
+    aesthetics$alpha <- rep(1, nrow(quantiles))
+    both <- cbind(quantiles, aesthetics)
+    quantile_grob <- GeomPath$draw_panel(both, ...)
+    ggplot2:::ggname("geom_split_violin", grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
+  }
+  else {
+    ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
+  }
+})
+
+geom_split_violin <- function(mapping = NULL, data = NULL, stat = "ydensity", position = "identity", ..., 
+                              draw_quantiles = NULL, trim = TRUE, scale = "area", na.rm = FALSE, 
+                              show.legend = NA, inherit.aes = TRUE) {
+  layer(data = data, mapping = mapping, stat = stat, geom = GeomSplitViolin, 
+        position = position, show.legend = show.legend, inherit.aes = inherit.aes, 
+        params = list(trim = trim, scale = scale, draw_quantiles = draw_quantiles, na.rm = na.rm, ...))
+}
+
+p<-ggplot(All_var_internal, aes(x=cell,y=log10(Variance), fill = treat)) + geom_split_violin()+geom_boxplot(outlier.shape=NA)
+p
+
+#maybe internal distances
+all_corr<-data.frame(corr_val=numeric(),annot=character())
+for (i in levels(Idents(all_merged)))
+{
+Info<-subset(all_merged, idents= c(paste0(i)))
+Pwcmprs<-t(Embeddings(object = Info, reduction = "pca"))
+#Loadings(object = all_DMSO, reduction = "pca")
+cr <- cor(Pwcmprs,method = "spearman")
+#cr <- dist(Pwcmprs,method ="euclidean")
+# This is to remove redundancy as upper correlation matrix == lower 
+cr[upper.tri(cr, diag=TRUE)] <- NA
+res<-reshape2::melt(cr, na.rm=TRUE, value.name="cor")$cor
+corr<-data.frame(corr_val=res,annot=rep(paste0(i),times=length(res)))
+all_corr<-rbind(all_corr,corr)
+}
+
+#maybe internal distances
+all_dist<-data.frame(corr_val=numeric(),annot=character())
+for (i in levels(Idents(all_merged)))
+{
+Info<-subset(all_merged, idents= c(paste0(i)))
+Pwcmprs<-t(Embeddings(object = Info, reduction = "pca"))
+#Loadings(object = all_DMSO, reduction = "pca")
+#cr <- cor(Pwcmprs,method = "spearman")
+dst <- dist(Pwcmprs,method ="euclidean")
+# This is to remove redundancy as upper correlation matrix == lower 
+dst[upper.tri(dst, diag=TRUE)] <- NA
+res<-reshape2::melt(dst, na.rm=TRUE, value.name="dst")$dst
+dist<-data.frame(dist_val=res,annot=rep(paste0(i),times=length(res)))
+all_dist<-rbind(all_dist,dist)
+}
+
+cell<-str_split_fixed(all_corr$annot, "_", 3)[,1]
+cond<-str_split_fixed(all_corr$annot, "_", 3)[,2]
+all_corr$cell<-cell
+all_corr$treat<-cond
+
+cell<-str_split_fixed(all_dist$annot, "_", 3)[,1]
+cond<-str_split_fixed(all_dist$annot, "_", 3)[,2]
+all_dist$cell<-cell
+all_dist$treat<-cond
+
+
+
+p<-ggplot(all_corr, aes(x=cell,y=corr_val, fill = treat)) + geom_split_violin()+geom_boxplot(outlier.shape=NA)
+p
+
+
+p2<-ggplot(all_dist, aes(x=cell,y=dist_val, fill = treat)) + geom_split_violin()+geom_boxplot(width=0.15,outlier.shape=NA) + xlab("")  + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+ theme(axis.text.x = element_text(angle = 45, hjust = 1))+ theme(legend.position = "none")
+
+
+ggsave(p2,filename="correlations_internal_dmso.pdf",width=5.5,height=6.631,units="cm")
+
+
+
+
+
+
+
+```
+
+
+```{r}
+#DMSO vs Tram
+#uniformity analysis
+library(Seurat)
+library(cowplot)
+library(umap)
+library(reshape2)
+library("EnhancedVolcano")
+all_merged<-readRDS(file="scRNA_singlet_filt.rds")
+cluster_MDA.markers <- FindMarkers(all_merged, ident.1 = "HCCMDAMB468_Trametinib", ident.2 = "HCCMDAMB468_DMSO" , min.pct =0.25)
+head(cluster_MDA.markers, n = 5)
+cluster_SUM.markers <- FindMarkers(all_merged, ident.1 = "SUM149PT_Trametinib", ident.2 = "SUM149PT_DMSO" , min.pct =0.25)
+head(cluster_SUM.markers, n = 5)
+cluster_HCC1806.markers <- FindMarkers(all_merged, ident.1 = "HCC1806_Trametinib", ident.2 = "HCC1806_DMSO" , min.pct =0.25)
+head(cluster_HCC1806.markers, n = 5)
+cluster_HCC1143G.markers <- FindMarkers(all_merged, ident.1 = "HCC1143G_Trametinib", ident.2 = "HCC1143G_DMSO" , min.pct =0.25)
+head(cluster_HCC1143G.markers, n = 5)
+cluster_HCC1143S.markers <- FindMarkers(all_merged, ident.1 = "HCC1143S_Trametinib", ident.2 = "HCC1143S_DMSO" , min.pct =0.25)
+cluster_Tram_vs_DMSO.markers <- FindMarkers(all_merged, ident.1 = c("HCC1143S_Trametinib","HCC1143G_Trametinib","HCC1806_Trametinib","HCCMDAMB468_Trametinib","SUM149PT_Trametinib"), ident.2 = c("HCC1143S_DMSO","HCC1143G_DMSO","HCC1806_DMSO","HCCMDAMB468_DMSO","SUM149PT_DMSO") , min.pct =0.25)
+write.table(cluster_Tram_vs_DMSO.markers,quote=F,sep="\t",file="ALL_TRAM_DMSO_0.05.txt")
+cluster_MDA.markers$log2FoldChange<- cluster_MDA.markers$avg_logFC/log(2)
+pass_HCCMDAMB468<-cluster_MDA.markers[which((cluster_MDA.markers$log2FoldChange >1 | cluster_MDA.markers$log2FoldChange < -1) & cluster_MDA.markers$p_val_adj<0.05),]
+write.table(cluster_MDA.markers,quote=F,sep="\t",file="MDA_TRAM_DMSO_0.05.txt")
+
+pdf("HCCMDAMB468_Tram_DMSO.pdf",width=5,height=5)
+  EnhancedVolcano(cluster_MDA.markers,
+    lab = rownames(cluster_MDA.markers),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'MDAMB468 Tram vs DMSO',
+    pCutoff = 0.05,
+    FCcutoff = 1,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+
+#SUM
+cluster_SUM.markers$log2FoldChange<- cluster_SUM.markers$avg_logFC/log(2)
+pass_SUM<-cluster_SUM.markers[which((cluster_SUM.markers$log2FoldChange >1 | cluster_SUM.markers$log2FoldChange < -1) & cluster_SUM.markers$p_val_adj<0.05),]
+write.table(cluster_SUM.markers,quote=F,sep="\t",file="SUM_TRAM_DMSO_0.05.txt")
+
+pdf("SUM_Tram_DMSO.pdf",width=5,height=5)
+  EnhancedVolcano(cluster_SUM.markers,
+    lab = rownames(cluster_SUM.markers),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'SUM149PT Tram vs DMSO',
+    pCutoff = 0.05,
+    FCcutoff = 1,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+ 
+
+
+#HCC1806
+cluster_HCC1806.markers$log2FoldChange<- cluster_HCC1806.markers$avg_logFC/log(2)
+pass_HCC1806<-cluster_HCC1806.markers[which((cluster_HCC1806.markers$log2FoldChange >1 | cluster_HCC1806.markers$log2FoldChange < -1) & cluster_HCC1806.markers$p_val_adj<0.05),]
+write.table(cluster_HCC1806.markers,quote=F,sep="\t",file="HCC1806_TRAM_DMSO_0.05.txt")
+
+pdf("HCC1806_Tram_DMSO.pdf",width=5,height=5)
+  EnhancedVolcano(cluster_HCC1806.markers,
+    lab = rownames(cluster_HCC1806.markers),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'HCC1806149PT Tram vs DMSO',
+    pCutoff = 0.05,
+    FCcutoff = 1,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+ 
+#HCC1143G
+cluster_HCC1143G.markers$log2FoldChange<- cluster_HCC1143G.markers$avg_logFC/log(2)
+pass_HCC1143G<-cluster_HCC1143G.markers[which((cluster_HCC1143G.markers$log2FoldChange >1 | cluster_HCC1143G.markers$log2FoldChange < -1) & cluster_HCC1143G.markers$p_val_adj<0.05),]
+write.table(cluster_HCC1143G.markers,quote=F,sep="\t",file="HCC1143G_TRAM_DMSO_0.05.txt")
+
+pdf("HCC1143G_Tram_DMSO.pdf",width=5,height=5)
+  EnhancedVolcano(cluster_HCC1143G.markers,
+    lab = rownames(cluster_HCC1143G.markers),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'HCC1143G Tram vs DMSO',
+    pCutoff = 0.05,
+    FCcutoff = 1,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+ 
+
+#HCC1143S
+cluster_HCC1143S.markers$log2FoldChange<- cluster_HCC1143S.markers$avg_logFC/log(2)
+pass_HCC1143S<-cluster_HCC1143S.markers[which((cluster_HCC1143S.markers$log2FoldChange >1 | cluster_HCC1143S.markers$log2FoldChange < -1) & cluster_HCC1143S.markers$p_val_adj<0.05),]
+write.table(cluster_HCC1143S.markers,quote=F,sep="\t",file="HCC1143S_TRAM_DMSO_0.05.txt")
+
+pdf("HCC1143S_Tram_DMSO.pdf",width=5,height=5)
+  EnhancedVolcano(cluster_HCC1143S.markers,
+    lab = rownames(cluster_HCC1143S.markers),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'HCC1143S Tram vs DMSO',
+    pCutoff = 0.05,
+    FCcutoff = 1,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+
+cluster_Tram_vs_DMSO.markers
+
+#ALL
+cluster_Tram_vs_DMSO.markers$log2FoldChange<- cluster_Tram_vs_DMSO.markers$avg_logFC/log(2)
+pass_ALL<-cluster_Tram_vs_DMSO.markers[which((cluster_Tram_vs_DMSO.markers$log2FoldChange >1 | cluster_Tram_vs_DMSO.markers$log2FoldChange < -1) & cluster_Tram_vs_DMSO.markers$p_val_adj<0.05),]
+write.table(cluster_Tram_vs_DMSO.markers,quote=F,sep="\t",file="ALL_TRAM_DMSO_0.05.txt")
+
+pdf("ALL_Tram_DMSO.pdf",width=5,height=5)
+  EnhancedVolcano(cluster_Tram_vs_DMSO.markers,
+    lab = rownames(cluster_Tram_vs_DMSO.markers),
+    x = 'log2FoldChange',
+    y = 'p_val_adj',
+    xlim = c(-5, 5),
+    title = 'SUM149PT Tram vs DMSO',
+    pCutoff = 0.05,
+    FCcutoff = 1,
+    transcriptPointSize = 1.5,
+    transcriptLabSize = 3.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1)
+dev.off()
+ 
+
+```
+
+
+
+#integrate ATAC and scRNA cicero approach
+
+```{r}
+
+
+
+library(Seurat)
+library(cowplot)
+library(umap)
+library(stringr)
+
+RNA.data<-readRDS("scRNA_singlet_filt.rds")
+#add umap (which was run outside)
+UMAP<-read.delim("PCA_singlet.proj.UMAP.dims",header = F,row.names = 1)
+write.table(RNA.data[["annot"]],file="RNA_orig.annot",quote = F,row.names = T,col.names = F,sep="\t")
+row.names(UMAP)<-gsub("\\.","-",row.names(UMAP))
+colnames(UMAP) <- paste0("umap_", 1:2)
+
+RNA.data[["umap"]]<-CreateDimReducObject(embeddings =as.matrix(UMAP),key = "umap_",assay = DefaultAssay(RNA.data))
+
+pdf(file="Plot_singlet_filt_umap.pdf")
+DimPlot(RNA.data, label = TRUE,group.by = "annot") + NoLegend()
+dev.off()
+
+
+
+
+
+ATAC.datam <-read.table("180227_180214.U54.merged.bbrd.q10.5k.filt.500.counts.filt_1000_10.matrix",sep="\t",header=T)
+
+rn<-str_split_fixed(row.names(ATAC.datam), "_", 3)
+rn<-paste0(rn[,1],":",rn[,2],"-",rn[,3])
+row.names(ATAC.datam)<-rn
+#read cicero annot?
+#ATAC.data<-readRDS("cicero.gene_acitivity_matrixunnorm.rds")
+
+
+#make simpler gene activity matrix
+ATAC.data <- CreateGeneActivityMatrix(peak.matrix = ATAC.datam,annotation.file ="Homo_sapiens.GRCh38.86.gtf", seq.levels = c(1:22, "X", "Y"), upstream = 2000,verbose = TRUE)
+
+ATAC.annot<-read.table("./180227_180214.U54.merged_new.annot",header=F)
+row.names(ATAC.annot)<-ATAC.annot$V1
+ATAC.annot.sel<-ATAC.annot[row.names(ATAC.annot) %in% colnames(ATAC.data), ]
+ATAC.datam<-ATAC.datam[,names(ATAC.datam) %in% colnames(ATAC.data)]
+
+
+all.atac <- CreateSeuratObject(counts = ATAC.datam, assay = "ATAC",meta.data =ATAC.annot.sel)
+all.atac[["ACTIVITY"]] <- CreateAssayObject(counts = ATAC.data)
+all.atac$tech <- "atac"
+
+#process activity
+DefaultAssay(all.atac) <- "ACTIVITY"
+all.atac <- FindVariableFeatures(all.atac)
+all.atac <- NormalizeData(all.atac)
+all.atac <- ScaleData(all.atac)
+all.atac <- RunPCA(all.atac)
+all.atac <- RunTSNE(all.atac, reduction = "pca", dims = 1:30)
+
+pdf(file="ATAC_activity_tsne_singlet_filt.pdf",width=20,height = 20)
+p1 <- DimPlot(all.atac, reduction = "tsne",group.by="V2",label=TRUE,repel=TRUE) + NoLegend() + ggtitle("scATAC-seq")
+p2 <- DimPlot(RNA.data, group.by = "annot", label = TRUE, repel = TRUE) + NoLegend() + ggtitle("scRNA-seq")
+CombinePlots(plots = list(p1, p2))
+dev.off()
+
+#do peaks analysis probably not gonna use
+
+DefaultAssay(all.atac) <- "ATAC"
+VariableFeatures(all.atac) <- names(which(Matrix::rowSums(all.atac) > 100))
+all.atac <- RunLSI(all.atac, n = 50, scale.max = NULL)
+all.atac <- RunTSNE(all.atac, reduction = "lsi", dims = 1:50)
+
+#let us try to read in the cistopic matrix
+
+cistopicM<-read.delim("180227_180214.U54.merged.bbrd.q10.5k.filt.500.counts.filt_1000_10.fine.tune.cistopic.matrix")
+cistopicUMAP<-read.delim("180227_180214.U54.merged.bbrd.q10.5k.filt.500.counts.filt_1000_10.fine.tune.cistopic.second.UMAP.dims",header = F,row.names = 1)
+cistopicloadings<-read.delim("annotationregionsandscores.matrix")
+cistopicloadings<-cistopicloadings[,19:72]
+colnames(cistopicloadings) <- paste0("cistopic_", 1:54)
+row.names(cistopicM) <- paste0("cistopic_", 1:54)
+cistopicEmbeddings<-t(cistopicM)
+colnames(cistopicUMAP) <- paste0("umap_", 1:2)
+
+
+cistopicUMAP<-cistopicUMAP[row.names(cistopicUMAP) %in% colnames(ATAC.data),]
+
+
+
+cistopicEmbeddings<-cistopicEmbeddings[row.names(cistopicEmbeddings) %in% colnames(ATAC.data),]
+
+
+all.atac[["umap"]]<-CreateDimReducObject(embeddings =as.matrix(cistopicUMAP),key = "umap_",assay = DefaultAssay(all.atac))
+
+all.atac[["cistopic"]]<-CreateDimReducObject(embeddings =as.matrix(cistopicEmbeddings),loadings=as.matrix(cistopicloadings),key = "cistopic_",assay = DefaultAssay(all.atac))
+
+
+
+
+
+
+all.rna<-RNA.data
+all.rna$tech <- "rna"
+
+png(file="ATAC_RNA_tsne_singlet_filt.png",width=20,height = 20)
+#p1 <- DimPlot(all.atac, reduction = "umap",group.by="V2",label=TRUE,repel=TRUE) + NoLegend() + ggtitle("scATAC-seq")
+p2 <- DimPlot(all.rna, group.by = "annot", label = TRUE, repel = TRUE) + NoLegend() + ggtitle("scRNA-seq")
+#CombinePlots(plots = list(p1, p2))
+p2
+dev.off()
+#SelectIntegrationFeatures(list(all.atac, all.rna)
+DefaultAssay(all.atac) <- "ACTIVITY"
+transfer.anchors <- FindTransferAnchors(reference = all.rna, query = all.atac, features = VariableFeatures(object = all.rna), reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
+#transfer.anchors <- FindTransferAnchors(reference =all.atac, query = all.rna, features = VariableFeatures(object = all.atac), reference.assay = "ACTIVITY", query.assay =  "RNA", reduction = "cca")
+
+
+celltype.predictions <- TransferData(anchorset = transfer.anchors, refdata = all.rna$annot, weight.reduction = all.atac[["cistopic"]])
+all.atac <- AddMetaData(all.atac, metadata = celltype.predictions)
+
+pdf(file="Pred_singlet_filt.pdf")
+hist(all.atac$prediction.score.max)
+abline(v = 0.5, col = "red")
+dev.off()
+
+all.atac.filtered <- subset(all.atac, subset = prediction.score.max > 0.5)
+all.atac.filtered$predicted.id <- factor(all.atac.filtered$predicted.id, levels = levels(all.rna))  # to make the colors match
+pdf(file="PRed_ATAC_RNA_tsne_singlet_filt.pdf",width=20,height = 20)
+p1 <- DimPlot(all.atac.filtered, group.by = "predicted.id", label = TRUE, repel = TRUE) + ggtitle("scATAC-seq cells") + 
+    NoLegend() + scale_colour_hue(drop = FALSE)
+p2 <- DimPlot(all.rna, group.by = "annot", label = TRUE, repel = TRUE) + ggtitle("scRNA-seq cells") + 
+    NoLegend()
+CombinePlots(plots = list(p1, p2))
+dev.off()
+
+
+saveRDS(all.atac,file="scatac_bint2.rds")
+all.atac<-readRDS("scatac_bint2.rds")
+
+#coembed
+
+# note that we restrict the imputation to variable genes from scRNA-seq, but could impute the
+# full transcriptome if we wanted to
+DefaultAssay(all.atac) <- "ACTIVITY"
+genes.use<-SelectIntegrationFeatures(list(all.atac, all.rna))
+genes.use2a <- VariableFeatures(all.rna,nfeatures = 1000)
+genes.use2b <- VariableFeatures(all.atac,nfeatures = 1000)
+# Identify the 10 most highly variable genes
+top10 <- head(genes.use, 10)
+top102a <- head(genes.use2a, 10)
+top102b <- head(genes.use2b, 10)
+
+pdf(file="Variable_features_coembed_singlet_filt.pdf",width=20,height = 20)
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(all.rna)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+
+pdf(file="Variable_features_covar_rna.activity.pdf",width=20,height = 20)
+# plot variable features with and without labels
+p1 <- VariableFeaturePlot(all.rna)
+p2 <- VariableFeaturePlot(all.atac)
+plot1 <- LabelPoints(plot = p1, points = top10, repel = TRUE)
+plot2 <- LabelPoints(plot = p2, points = top10, repel = TRUE)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+pdf(file="Variable_features_indvar_rna.activity.pdf",width=20,height = 20)
+# plot variable features with and without labels
+p1 <- VariableFeaturePlot(all.rna)
+p2 <- VariableFeaturePlot(all.atac)
+plot1 <- LabelPoints(plot = p1, points = top102a, repel = TRUE)
+plot2 <- LabelPoints(plot = p2, points = top102b, repel = TRUE)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+
+refdata <- GetAssayData(all.rna, assay = "RNA", slot = "data")[genes.use, ]
+
+#refdata <- GetAssayData(all.atac, assay = "ACTIVITY", slot = "data")[genes.use, ]
+
+
+
+# refdata (input) contains a scRNA-seq expression matrix for the scRNA-seq cells.  imputation
+# (output) will contain an imputed scRNA-seq matrix for each of the ATAC cells
+imputation <- TransferData(anchorset = transfer.anchors, refdata = refdata, weight.reduction = all.atac[["lsi"]])
+#imputation <- TransferData(anchorset = transfer.anchors, refdata = refdata, weight.reduction = all.rna[["pca"]])
+#
+# this line adds the imputed data matrix to the all.atac object
+all.atac[["RNA"]] <- imputation
+#all.rna[["ACTIVITY"]]<- imputation
+coembed <- merge(x = all.rna, y = all.atac)
+
+#coembed <- NormalizeData(coembed)
+# Finally, we run PCA and UMAP on this combined object, to visualize the co-embedding of both
+# datasets
+coembed <- ScaleData(coembed, features = genes.use, do.scale = FALSE)
+coembed <- RunPCA(coembed, features = genes.use, verbose = FALSE)
+coembed <- RunTSNE(coembed, reduction = "pca", dims = 1:30,check_duplicates = FALSE)
+coembed$annot <- ifelse(!is.na(coembed$annot), coembed$annot, coembed$predicted.id)
+
+pdf(file="coembed_ATAC_RNA_tsne_singlet_filt3.pdf",width=20,height = 20)
+p1 <- DimPlot(coembed, group.by = "tech")
+p2 <- DimPlot(coembed, group.by = "annot", label = TRUE, repel = TRUE)
+CombinePlots(list(p1, p2))
+dev.off()
+
+out<- Embeddings(coembed, reduction= "pca")
+write.table(t(out),"PCA_singlet.coembed.matrix",row.names=T,col.names=T,sep="\t",quote=F)
+
+
+
+
+saveRDS(coembed,file="coembed1_singlet_filt.rds")
+
+```
+
+```{r}
+
+
+#test
+
+DefaultAssay(all.atac) <- "ACTIVITY"
+
+comb.anchors <- FindIntegrationAnchors(object.list = list(all.atac, all.rna), dims = 1:20)
+int_fet<-SelectIntegrationFeatures(list(all.atac, all.rna))
+rnadna.combined <- IntegrateData(anchorset = comb.anchors, dims = 1:20)
+
+DefaultAssay(rnadna.combined ) <- "integrated"
+#all_merged<- SCTransform(all_merged
+# Run the standard workflow for visualization and clustering
+rnadna.combined  <- ScaleData(rnadna.combined , verbose = FALSE)
+rnadna.combined  <- RunPCA(rnadna.combined , npcs = 30, verbose = FALSE)
+# t-SNE and Clustering
+rnadna.combined <- RunTSNE(rnadna.combined, reduction = "pca", dims = 1:20,check_duplicates = FALSE)
+
+pdf(file="coembed1_ATAC_RNA_tsne_singlet_filt.pdf",width=20,height = 20)
+p1 <- DimPlot(rnadna.combined, group.by = "tech")
+#p2 <- DimPlot(coembed, group.by = "annot", label = TRUE, repel = TRUE)
+#CombinePlots(list(p1, p2))
+p1
+dev.off()
+```
+
+
+
+```{r}
+library(Seurat)
+library("dplyr")
+library("Matrix")
+library("Seurat")
+library(stringr)
+library(MASS)
+library(ggplot2)
+ library(mixtools)
+#write out coembeded gene results
+#coembed_final_standard_norm_singlet_filt.rds
+combeded_dataset<-readRDS("coembed_final_standard_norm_singlet_filt.rds")
+#find all markers
+
+annot_temp<-combeded_dataset[["annot"]]
+annot_temp$annot<-gsub("Trametinib","Tram",annot_temp$annot)
+annot_temp$annot<-gsub("HCCMDAMB468","MDA",annot_temp$annot)
+annot_temp$annot<-gsub("SUM149PT","SUM",annot_temp$annot)
+
+Idents(object = combeded_dataset)<-annot_temp
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+all_merged.markers <- FindAllMarkers(combeded_dataset, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+all_merged.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC)
+
+
+top10 <- all_merged.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+
+pdf(file="Integrated_set_Markers_singlet_filt.pdf",height = 20, width = 20)
+DoHeatmap(combeded_dataset, features = top10$gene) + NoLegend()
+dev.off()
+```
+
+
+
