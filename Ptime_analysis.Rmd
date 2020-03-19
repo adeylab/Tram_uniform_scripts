@@ -192,8 +192,8 @@ for ( i in select_sites) {
   myplots[[i]] <-  ggplot(pval_atac,aes_string(x="ptime",y=i))+ylab("Mean probability of site usage")+ggtitle(paste0(i))+geom_point(aes(color=cell_corr))+theme_bw()+geom_smooth(aes(color=cell))+  scale_colour_manual(values = c("HCC1143G" = "#99000d","HCC1143G_DMSO" = "#99000d","HCC1143G_Tram" = "#fcbba1","HCC1143S_DMSO" = "#e66101","HCC1143S" = "#e66101","HCC1143S_Tram" = "#fdb863","HCC1806_DMSO" = "#006d2c","HCC1806" = "#006d2c","HCC1806_Tram" = "#74c476","MDA_DMSO" = "#045a8d","MDA" = "#045a8d","MDA_Tram" = "#a6bddb","SUM_DMSO" = "#810f7c","SUM" = "#810f7c","SUM_Tram" = "#8c6bb1"))+theme_classic() + theme(legend.position="none",text =element_text(size = 6),plot.title = element_text(size=6),axis.title.y = element_text(size=6),axis.title.x = element_blank())
 }
 figure <- ggarrange(plotlist=myplots, ncol = 1, nrow = length(myplots),align = "v")
-ggsave(plot=figure,file=paste0(gene_name,"_expression_vs_accessibilty_clsassic_select_sites.png"),height=6,width=18,dpi = 600,units = "cm")
-ggsave(plot=figure,file=paste0(gene_name,"_expression_vs_accessibilty_clsassic_select_sites.pdf"),height=6,width=18,units = "cm")
+ggsave(plot=figure,file=paste0(gene_name,"_expression_vs_accessibilty_clsassic_select_sites.png"),height=6,width=12,dpi = 600,units = "cm")
+ggsave(plot=figure,file=paste0(gene_name,"_expression_vs_accessibilty_clsassic_select_sites.pdf"),height=6,width=12,units = "cm")
 }
 }
 ```
@@ -930,6 +930,108 @@ ggsave(g,file="Q_breakdown_down_0.15.pdf",height = 5,width = 5)
 
 
 ```{r}
+library("stringr")
+library("dplyr")
+library(ggpubr)
+#this is with not 0.15 cutoff
+RNA_ATAC_master_down<-read.delim("RNA_ATAC_master_list_down_0.001_cutoff.txt")
+RNA_ATAC_master_up<-read.delim("RNA_ATAC_master_list_up_0.001_cutoff.txt")
+
+RNA_ATAC_master_up$site_sep<-gsub(str_split_fixed(string = RNA_ATAC_master_up$site,pattern = "_CA_",2)[,1],pattern = "-",replacement = "_")
+color<-read.delim(header=F,file="cell2.annot.colors")
+colorcode=as.character(color$V2)
+
+#just MDA cistopic
+MDA_cicero<-read.delim("MDA_cicero.txt")
+SUM_cicero<-read.delim("SUM_cicero.txt")
+HCC1143G_cicero<-read.delim("HCC1143G_cicero.txt")
+HCC1143S_cicero<-read.delim("HCC1143S_cicero.txt")
+HCC1806_cicero<-read.delim("HCC1806_cicero.txt")
+
+#promoters
+RNA_ATAC_master_up_p<-RNA_ATAC_master_up[which(RNA_ATAC_master_up$coaccess==1),]
+RNA_ATAC_master_down_p<-RNA_ATAC_master_down[RNA_ATAC_master_down$coaccess==1,]
+
+RNA_ATAC_master_cl_added=data.frame(site_sep=character(),site=character(),log2fold=double(),pval=double(),celline=character(),gene=character(),corr_sp=double(),coaccess_orig=double(),qval=double(),coaccess_cl=character())
+for (celline in levels(RNA_ATAC_master_up$celline)) {print(celline)
+Combined_celline_site=data.frame(site=character(),coaccess=double())
+for (gene in levels(RNA_ATAC_master_up$gene))
+{
+  
+cicero<-eval(parse(text=paste0(celline,"_cicero")))
+#gene="FRMD6"
+Celline_up_sites<-RNA_ATAC_master_up[RNA_ATAC_master_up$celline==celline,]
+List_linked_sites_cl<-Celline_up_sites[Celline_up_sites$gene==gene,] 
+List_linked_sites_all<-RNA_ATAC_master_up[RNA_ATAC_master_up$gene==gene,] 
+promoter=unique(List_linked_sites_all[List_linked_sites_all$coaccess==1,]$site)
+#there are cases where there are multiple promoters average sites that are linked to multiple promoters
+if(length(promoter)>0)
+{
+print(gene)
+pr_mod<-gsub(str_split_fixed(string = unique(promoter),pattern = "_CA_",2)[,1],pattern = "-",replacement = "_")
+all_peak_linked_promoters <- (lapply(pr_mod,function(pr){cicero[cicero$Peak1==pr,]}) %>% bind_rows())
+if (dim(all_peak_linked_promoters)[1]>0)
+{
+all_peak_linked_enhancers<-data.frame(RE=all_peak_linked_promoters$Peak2,coaccess=all_peak_linked_promoters$coaccess)
+print(dim(all_peak_linked_enhancers))
+#all_peak_linked_collapsed_enhancers<-
+gene_collapsed<-aggregate(all_peak_linked_enhancers$coaccess,by=list(name=all_peak_linked_enhancers$RE),data=df,FUN=mean)
+
+names(gene_collapsed)=c("site","coaccess")
+Combined_celline_site<-rbind(Combined_celline_site,gene_collapsed)
+}
+else {print(paste0("no linked sites for: ", gene, "at: ", celline))}
+}
+else {print(paste0("no promoter for",gene))}
+}
+Master_up_combined<-merge(x = RNA_ATAC_master_up[RNA_ATAC_master_up$celline==celline,], Combined_celline_site, by.x="site_sep",by.y="site")
+names(Master_up_combined)<-c("Site_sep","site","log2fold","pval","celline","gene","corr_sp","coaccess_orig","qval","coaccess_cl")
+RNA_ATAC_master_cl_added<-rbind(Master_up_combined,RNA_ATAC_master_cl_added)
+}
+
+write.table(RNA_ATAC_master_cl_added,file="Celline_specific_coaccessibilty_up_0.001.txt",quote=F,sep="\t")
+
+#plot this landscape as well
+
+
+library(ggplot2)
+g1<-ggplot()+geom_density_2d(data=RNA_ATAC_master_cl_added,aes(x=coaccess_cl,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")
+#+geom_point(aes(x=coaccess,y=corr_sp),data=df_examples)+geom_text(data=df_examples,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
+#g2<-ggplot()+geom_density_2d(data=corr_fin_down,aes(x=coaccess,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")+geom_point(data=df_examples,aes(x=coaccess,y=corr_sp))+geom_text(data=df_examples,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
+#g<-ggarrange(g1,g2,widths=c(8,8),ncol=2,nrow=1)
+ggsave(g1,filename = "Output_quartiles_up_cl_specific.pdf",width = 16,height = 26.4,units = "cm")
+
+
+
+
+
+
+
+
+
+
+lapply(my_vector, my_function) %>% bind_rows()
+
+unique(RNA_ATAC_master_up[RNA_ATAC_master_up$gene=="AHNAK2",]$site)
+
+#select for promoters
+
+Up_promoters<-gsub(str_split_fixed(string = unique(RNA_ATAC_master_up_p$site),pattern = "_CA_",2)[,1],pattern = "-",replacement = "_")
+
+sapply(Up_promoters,function(x){HCC1806_cicero[HCC1806_cicero$Peak1==x,]})
+
+
+
+
+
+RNA_DOWN_short<-data.frame(site=RNA_ATAC_master_down$site,log2FoldChange=RNA_ATAC_master_down$log2fold,qval=RNA_ATAC_master_down$qval,celline=RNA_ATAC_master_down$celline,gene=RNA_ATAC_master_down$gene)
+#collapse repeats
+RNA_DOWN_short<-aggregate(data=RNA_DOWN_short,celline~.,FUN=paste,collapse=",")
+
+RNA_UP_short<-data.frame(site=RNA_ATAC_master_up$site,log2FoldChange=RNA_ATAC_master_up$log2fold,qval=RNA_ATAC_master_up$qval,celline=RNA_ATAC_master_up$celline,gene=RNA_ATAC_master_up$gene)
+#collapse repeats
+RNA_UP_short<-aggregate(data=RNA_UP_short,celline~.,FUN=paste,collapse=",")
+library(ggplot2)
 #example of where the gene promoters are close and we get shared signal
 plot_rna_atac_access("HES4",method="IND")
 plot_rna_atac_access("ISG15",method="IND")
@@ -940,6 +1042,9 @@ RNA_ATAC_master_up[(RNA_ATAC_master_up$gene=="HES4" | RNA_ATAC_master_up$gene=="
 
 corr_matchup<-RNA_ATAC_master_up[(RNA_ATAC_master_up$gene=="HES4" | RNA_ATAC_master_up$gene=="ISG15"),]$corr
 RNA_ATAC_master_up[(RNA_ATAC_master_up$gene=="HES4" | RNA_ATAC_master_up$gene=="ISG15"),][abs(corr_matchup)>0.9,]
+
+corr_fin_up<-na.omit(RNA_ATAC_master_up[RNA_ATAC_master_up$coaccess != 1 ,])
+corr_fin_down<-na.omit(RNA_ATAC_master_down[RNA_ATAC_master_down$coaccess !=1 ,])
 
 
 #lets look for a case where the site is a repressor and an enhancer as well
@@ -963,10 +1068,10 @@ for (i in levels(RNA_ATAC_master_up$site) ){
 
 final_ordered_difference_up<-res_comparison[order(res_comparison$difference_log2),]
 
-which_gene=RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr10_3689885_3690385_CA_0.1836",]
-which_gene=RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr8_123877943_123883529_CA_-0.3880",]
-which_gene=RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr1_153081716_153082216_CA_0.4687",]
-which_gene=RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr14_69242453_69242953_CA_0.1531",]
+RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr10_3689885_3690385_CA_0.1836",]
+RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr8_123877943_123883529_CA_-0.3880",]
+RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr1_153081716_153082216_CA_0.4687",]
+RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr14_69242453_69242953_CA_0.1531",]
 
 plot_rna_atac_access("KLF6",method="aggregate")
 #plot_rna_atac_access("FBXO32",method="aggregate")
@@ -979,7 +1084,8 @@ plot_rna_atac_access("S100A9",method="aggregate",select_sites = c("chr1_15308171
 res_comparison=data.frame(site=character(),difference_log2=double(),difference_corr=double())
 for (i in levels(RNA_ATAC_master_down$site) ){
   select=RNA_ATAC_master_down[RNA_ATAC_master_down$site==paste(i),]
-  test_set<-select$corr_sp
+  test_set<-select$log2fold
+  test_set2<-select$corr_sp
   if(dim(select)>1)
   if(dim(select)>1)
   {
@@ -994,13 +1100,43 @@ for (i in levels(RNA_ATAC_master_down$site) ){
 }
 
 
-
-
 final_ordered_difference_down<-res_comparison[order(res_comparison$difference_log2),]
 
-which_gene=RNA_ATAC_master_down[RNA_ATAC_master_down$site=="chr11_65851061_65860777_CA_0.2054",]
+RNA_ATAC_master_down[RNA_ATAC_master_down$site=="chr11_65851061_65860777_CA_0.2054",]
+RNA_ATAC_master_down[RNA_ATAC_master_down$site=="chr12_2613672_2614172_CA_0.6276",]
+RNA_ATAC_master_down[RNA_ATAC_master_down$site=="chr20_5341973_5342473_CA_0.3468",]
+
 
 plot_rna_atac_access("FOSL1",method="aggregate",select_sites = c("chr11_65851061_65860777_CA_0.2054"))
+plot_rna_atac_access("FOXM1",method="aggregate",select_sites = c("chr12_2876335_2893392_CA_1.0000","chr12_2613672_2614172_CA_0.6276"))
+plot_rna_atac_access("HSPD1",method="aggregate",select_sites = c("chr2_197360709_197361209_CA__0.3084"))
+plot_rna_atac_access("PCNA",method="aggregate",select_sites = c("chr20_5341973_5342473_CA_0.3468"))
+
+
+#foxm1
+df_foxm1=data.frame(coaccess=c(0.6276,0.6276),corr_sp=c(0.6778952,-0.9989545),label=c("RE SUM149PT","RE HCC1143G"))
+colorcode=as.character(color$V2)
+names(colorcode)=color$V1
+corr_fin_down_foxm1<-corr_fin_down[corr_fin_down$celline=="SUM" | corr_fin_down$celline=="HCC1143G",]
+gfox<-ggplot()+geom_density_2d(data=corr_fin_down_foxm1,aes(x=coaccess,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")+geom_point(data=df_foxm1,aes(x=coaccess,y=corr_sp))+geom_text(data=df_foxm1,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
+ggsave(gfox,filename = "Output_quartiles_w_examples_foxm.png",height=12,width=12,dpi = 600,units = "cm")
+ggsave(gfox,filename = "Output_quartiles_w_examples_foxm.pdf",height=12,width=12,units = "cm")
+
+library(ggplot2)
+g1<-ggplot()+geom_density_2d(data=corr_fin_up,aes(x=coaccess,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")+geom_point(aes(x=coaccess,y=corr_sp),data=df_examples)+geom_text(data=df_examples,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
+g2<-ggplot()+geom_density_2d(data=corr_fin_down,aes(x=coaccess,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")+geom_point(data=df_examples,aes(x=coaccess,y=corr_sp))+geom_text(data=df_examples,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
+library(ggpubr)
+
+g<-ggarrange(g1,g2,widths=c(8,8),ncol=2,nrow=1)
+ggsave(g,filename = "Output_quartiles_w_examples_big.pdf",width = 16,height = 26.4,units = "cm")
+
+
+
+
+
+
+
+
 ```
 
 
