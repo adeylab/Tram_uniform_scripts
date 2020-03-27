@@ -1873,7 +1873,7 @@ dev.off()
 ```
 
 
-
+Downstream combined analysis
 ```{r}
 library(Seurat)
 library("dplyr")
@@ -1883,8 +1883,8 @@ library(stringr)
 library(MASS)
 library(ggplot2)
  library(mixtools)
-#write out coembeded gene results
-#coembed_final_standard_norm_singlet_filt.rds
+
+#read in combeded res
 combeded_dataset<-readRDS("coembed_final_standard_norm_singlet_filt.rds")
 #find all markers
 
@@ -1894,6 +1894,20 @@ annot_temp$annot<-gsub("HCCMDAMB468","MDA",annot_temp$annot)
 annot_temp$annot<-gsub("SUM149PT","SUM",annot_temp$annot)
 
 Idents(object = combeded_dataset)<-annot_temp
+
+CCA_UMAP<-read.delim("COEMBED_res_CCA_results.UMAP.dims",header = F,row.names = 1)
+colnames(CCA_UMAP) <- paste0("umap_", 1:2)
+row.names(CCA_UMAP)<-gsub(pattern="\\.",replacement = "-",x=row.names(CCA_UMAP))
+combeded_dataset[["umap"]]<-CreateDimReducObject(embeddings =as.matrix(CCA_UMAP),key = "umap_",assay = DefaultAssay(combeded_dataset))
+
+#Coembedded feature plot
+pdf(file="coembed_cds_KRT14_feature.pdf",width=5,height = 5)
+FeaturePlot(combeded_dataset, features = "KRT14", cols = c("grey", "red"),reduction = "umap")
+dev.off()
+
+pdf(file="coembed_cds_EGR1_feature.pdf",width=5,height = 5)
+FeaturePlot(combeded_dataset, features = "EGR1", cols = c("grey", "red"),reduction = "umap")
+dev.off()
 
 # find markers for every cluster compared to all remaining cells, report only the positive ones
 all_merged.markers <- FindAllMarkers(combeded_dataset, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
@@ -1905,6 +1919,7 @@ top10 <- all_merged.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log
 pdf(file="Integrated_set_Markers_singlet_filt.pdf",height = 20, width = 20)
 DoHeatmap(combeded_dataset, features = top10$gene) + NoLegend()
 dev.off()
+
 ```
 
 

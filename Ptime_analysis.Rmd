@@ -20,6 +20,7 @@ library(gridExtra)
 
 #read coembeded cds
 coembed_cds <- readRDS(file="coembed_monocle3_res.rds")
+
 pseudotime<-as.data.frame(pData(coembed_cds)$Pseudotime)
 row.names(pseudotime)<-row.names(pData(coembed_cds))
 names(pseudotime)<-"pseudotime"
@@ -940,6 +941,7 @@ RNA_ATAC_master_up<-read.delim("RNA_ATAC_master_list_up_0.001_cutoff.txt")
 RNA_ATAC_master_up$site_sep<-gsub(str_split_fixed(string = RNA_ATAC_master_up$site,pattern = "_CA_",2)[,1],pattern = "-",replacement = "_")
 color<-read.delim(header=F,file="cell2.annot.colors")
 colorcode=as.character(color$V2)
+RNA_ATAC_master_down$site_sep<-gsub(str_split_fixed(string = RNA_ATAC_master_down$site,pattern = "_CA_",2)[,1],pattern = "-",replacement = "_")
 
 #just MDA cistopic
 MDA_cicero<-read.delim("MDA_cicero.txt")
@@ -952,76 +954,131 @@ HCC1806_cicero<-read.delim("HCC1806_cicero.txt")
 RNA_ATAC_master_up_p<-RNA_ATAC_master_up[which(RNA_ATAC_master_up$coaccess==1),]
 RNA_ATAC_master_down_p<-RNA_ATAC_master_down[RNA_ATAC_master_down$coaccess==1,]
 
-RNA_ATAC_master_cl_added=data.frame(site_sep=character(),site=character(),log2fold=double(),pval=double(),celline=character(),gene=character(),corr_sp=double(),coaccess_orig=double(),qval=double(),coaccess_cl=character())
-for (celline in levels(RNA_ATAC_master_up$celline)) {print(celline)
-Combined_celline_site=data.frame(site=character(),coaccess=double())
+RNA_ATAC_master_cl_added_up=data.frame(site_sep=character(),site=character(),log2fold=double(),pval=double(),celline=character(),gene=character(),corr_sp=double(),coaccess_orig=double(),qval=double(),coaccess_cl=character())
+RNA_ATAC_master_cl_added_down=data.frame(site_sep=character(),site=character(),log2fold=double(),pval=double(),celline=character(),gene=character(),corr_sp=double(),coaccess_orig=double(),qval=double(),coaccess_cl=character())
+for (celline in levels(RNA_ATAC_master_up$celline)) {
+print(celline)
+Combined_celline_site_up=data.frame(site=character(),coaccess=double())
 for (gene in levels(RNA_ATAC_master_up$gene))
 {
   
 cicero<-eval(parse(text=paste0(celline,"_cicero")))
-#gene="FRMD6"
 Celline_up_sites<-RNA_ATAC_master_up[RNA_ATAC_master_up$celline==celline,]
-List_linked_sites_cl<-Celline_up_sites[Celline_up_sites$gene==gene,] 
-List_linked_sites_all<-RNA_ATAC_master_up[RNA_ATAC_master_up$gene==gene,] 
-promoter=unique(List_linked_sites_all[List_linked_sites_all$coaccess==1,]$site)
+List_linked_sites_cl_up<-Celline_up_sites[Celline_up_sites$gene==gene,] 
+List_linked_sites_all_up<-RNA_ATAC_master_up[RNA_ATAC_master_up$gene==gene,] 
+promoter_up=unique(List_linked_sites_all_up[List_linked_sites_all_up$coaccess==1,]$site)
 #there are cases where there are multiple promoters average sites that are linked to multiple promoters
-if(length(promoter)>0)
+if(length(promoter_up)>0)
 {
 print(gene)
-pr_mod<-gsub(str_split_fixed(string = unique(promoter),pattern = "_CA_",2)[,1],pattern = "-",replacement = "_")
-all_peak_linked_promoters <- (lapply(pr_mod,function(pr){cicero[cicero$Peak1==pr,]}) %>% bind_rows())
-if (dim(all_peak_linked_promoters)[1]>0)
+pr_mod_up<-gsub(str_split_fixed(string = unique(promoter_up),pattern = "_CA_",2)[,1],pattern = "-",replacement = "_")
+all_peak_linked_promoters_up <- (lapply(pr_mod_up,function(pr){cicero[cicero$Peak1==pr,]}) %>% bind_rows())
+if (dim(all_peak_linked_promoters_up)[1]>0)
 {
-all_peak_linked_enhancers<-data.frame(RE=all_peak_linked_promoters$Peak2,coaccess=all_peak_linked_promoters$coaccess)
-print(dim(all_peak_linked_enhancers))
+all_peak_linked_enhancers_up<-data.frame(RE=all_peak_linked_promoters_up$Peak2,coaccess=all_peak_linked_promoters_up$coaccess)
+print(dim(all_peak_linked_enhancers_up))
 #all_peak_linked_collapsed_enhancers<-
-gene_collapsed<-aggregate(all_peak_linked_enhancers$coaccess,by=list(name=all_peak_linked_enhancers$RE),data=df,FUN=mean)
+gene_collapsed_up<-aggregate(all_peak_linked_enhancers_up$coaccess,by=list(name=all_peak_linked_enhancers_up$RE),FUN=mean)
 
-names(gene_collapsed)=c("site","coaccess")
-Combined_celline_site<-rbind(Combined_celline_site,gene_collapsed)
+names(gene_collapsed_up)=c("site","coaccess")
+Combined_celline_site_up<-rbind(Combined_celline_site_up,gene_collapsed_up)
 }
 else {print(paste0("no linked sites for: ", gene, "at: ", celline))}
 }
 else {print(paste0("no promoter for",gene))}
 }
-Master_up_combined<-merge(x = RNA_ATAC_master_up[RNA_ATAC_master_up$celline==celline,], Combined_celline_site, by.x="site_sep",by.y="site")
+Combined_celline_site_down=data.frame(site=character(),coaccess=double())
+for (gene in levels(RNA_ATAC_master_down$gene))
+{
+cicero<-eval(parse(text=paste0(celline,"_cicero")))
+Celline_down_sites<-RNA_ATAC_master_down[RNA_ATAC_master_down$celline==celline,]
+List_linked_sites_cl_down<-Celline_down_sites[Celline_down_sites$gene==gene,] 
+List_linked_sites_all_down<-RNA_ATAC_master_down[RNA_ATAC_master_down$gene==gene,] 
+promoter_down=unique(List_linked_sites_all_down[List_linked_sites_all_down$coaccess==1,]$site)
+#there are cases where there are multiple promoters average sites that are linked to multiple promoters
+if(length(promoter_down)>0)
+{
+print(gene)
+pr_mod_down<-gsub(str_split_fixed(string = unique(promoter_down),pattern = "_CA_",2)[,1],pattern = "-",replacement = "_")
+all_peak_linked_promoters_down <- (lapply(pr_mod_down,function(pr){cicero[cicero$Peak1==pr,]}) %>% bind_rows())
+if (dim(all_peak_linked_promoters_down)[1]>0)
+{
+all_peak_linked_enhancers_down<-data.frame(RE=all_peak_linked_promoters_down$Peak2,coaccess=all_peak_linked_promoters_down$coaccess)
+print(dim(all_peak_linked_enhancers_down))
+#all_peak_linked_collapsed_enhancers<-
+gene_collapsed_down<-aggregate(all_peak_linked_enhancers_down$coaccess,by=list(name=all_peak_linked_enhancers_down$RE),FUN=mean)
+names(gene_collapsed_down)=c("site","coaccess")
+Combined_celline_site_down<-rbind(Combined_celline_site_down,gene_collapsed_down)
+}
+else {print(paste0("no linked sites for: ", gene, "at: ", celline))}
+}
+else {print(paste0("no promoter for",gene))}
+}
+Master_up_combined<-merge(x = RNA_ATAC_master_up[RNA_ATAC_master_up$celline==celline,], Combined_celline_site_up, by.x="site_sep",by.y="site")
 names(Master_up_combined)<-c("Site_sep","site","log2fold","pval","celline","gene","corr_sp","coaccess_orig","qval","coaccess_cl")
-RNA_ATAC_master_cl_added<-rbind(Master_up_combined,RNA_ATAC_master_cl_added)
+RNA_ATAC_master_cl_added_up<-rbind(Master_up_combined,RNA_ATAC_master_cl_added_up)
+
+Master_down_combined<-merge(x = RNA_ATAC_master_down[RNA_ATAC_master_down$celline==celline,], Combined_celline_site_down, by.x="site_sep",by.y="site")
+names(Master_down_combined)<-c("Site_sep","site","log2fold","pval","celline","gene","corr_sp","coaccess_orig","qval","coaccess_cl")
+RNA_ATAC_master_cl_added_down<-rbind(Master_down_combined,RNA_ATAC_master_cl_added_down)
 }
 
-write.table(RNA_ATAC_master_cl_added,file="Celline_specific_coaccessibilty_up_0.001.txt",quote=F,sep="\t")
+write.table(RNA_ATAC_master_cl_added_up,file="Celline_specific_coaccessibilty_up_0.001.txt",quote=F,sep="\t")
+write.table(RNA_ATAC_master_cl_added_down,file="Celline_specific_coaccessibilty_down_0.001.txt",quote=F,sep="\t")
+
 
 #plot this landscape as well
-
-
 library(ggplot2)
-g1<-ggplot()+geom_density_2d(data=RNA_ATAC_master_cl_added,aes(x=coaccess_cl,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")
+g1<-ggplot()+geom_density_2d(data=RNA_ATAC_master_cl_added_up,aes(x=coaccess_cl,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")
 #+geom_point(aes(x=coaccess,y=corr_sp),data=df_examples)+geom_text(data=df_examples,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
-#g2<-ggplot()+geom_density_2d(data=corr_fin_down,aes(x=coaccess,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")+geom_point(data=df_examples,aes(x=coaccess,y=corr_sp))+geom_text(data=df_examples,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
-#g<-ggarrange(g1,g2,widths=c(8,8),ncol=2,nrow=1)
-ggsave(g1,filename = "Output_quartiles_up_cl_specific.pdf",width = 16,height = 26.4,units = "cm")
+g2<-ggplot()+geom_density_2d(data=RNA_ATAC_master_cl_added_down,aes(x=coaccess_cl,y=corr_sp,color=celline))+theme_classic()+scale_color_manual(values=colorcode)+theme(legend.position = "none",axis.title.x=element_blank(),axis.title.y=element_blank())+ facet_grid(celline ~ .) + geom_vline(xintercept = c(-0.15,0.15), linetype="dashed")+geom_hline(yintercept = c(-0.5,0.5), linetype="dashed")
+#+geom_point(data=df_examples,aes(x=coaccess,y=corr_sp))+geom_text(data=df_examples,aes(x=coaccess,y=corr_sp,label=label),hjust=0, vjust=0)
+g<-ggarrange(g1,g2,widths=c(8,8),ncol=2,nrow=1)
+ggsave(g,filename = "Output_quartiles_up_cl_specific.pdf",width = 16,height = 26.4,units = "cm")
 
 
 
 
+RNA_ATAC_master_cl_added_up<-read.delim("Celline_specific_coaccessibilty_up_0.001.txt")
+RNA_ATAC_master_cl_added_down<-read.delim("Celline_specific_coaccessibilty_down_0.001.txt")
 
 
+corr_fin_up<-na.omit(RNA_ATAC_master_cl_added_up[RNA_ATAC_master_cl_added_up$coaccess != 1 ,])
+corr_fin_down<-na.omit(RNA_ATAC_master_cl_added_down[RNA_ATAC_master_cl_added_down$coaccess !=1 ,])
+
+#lets look for a case where the site is a repressor and an enhancer as well
+res_comparison=data.frame(site=character(),difference_log2=double(),difference_corr=double(),difference_coaccess=double())
+for (i in levels(RNA_ATAC_master_cl_added_up$site) ){
+  select=RNA_ATAC_master_cl_added_up[RNA_ATAC_master_cl_added_up$site==paste(i),]
+  test_set<-select$log2fold
+  test_set2<-select$corr_sp
+  test_set3<-select$coaccess_cl
+  #select for cases where miltiple genes changes
+  if(dim(select)>1)
+  {
+  comparisons_log2<-sapply(test_set,function(x){abs(test_set-x)})
+  res_log2<-max(comparisons_log2[lower.tri(comparisons_log2)])
+  comparisons_corr<-sapply(test_set2,function(x){abs(test_set2-x)})
+  res_corr<-max(comparisons_corr[lower.tri(comparisons_corr)])
+  comparisons_ca<-sapply(test_set3,function(x){abs(test_set3-x)})
+  res_ca<-max(comparisons_ca[lower.tri(comparisons_ca)])
+  
+  
+  #print(res)
+  res_comparison=rbind(res_comparison,data.frame(site=paste(i),difference_log2=res_log2,difference_corr=res_corr,difference_coaccess=res_ca))
+}
+  
+}
+
+final_ordered_difference_up_ls_sp<-res_comparison[order(res_comparison$difference_log2),]
+
+RNA_ATAC_master_cl_added_up[RNA_ATAC_master_cl_added_up$site=="chr14_68924360_68924860_CA_0.4668",]
+RNA_ATAC_master_cl_added_up[RNA_ATAC_master_cl_added_up$site=="chr1_153150846_153151346_CA_0.1645",]
+RNA_ATAC_master_cl_added_up[RNA_ATAC_master_cl_added_up$site=="chr11_65675988_65676488_CA_-0.1524",]
+#from here not hte cl specific coaccess 
 
 
-
-
-lapply(my_vector, my_function) %>% bind_rows()
-
-unique(RNA_ATAC_master_up[RNA_ATAC_master_up$gene=="AHNAK2",]$site)
-
-#select for promoters
-
-Up_promoters<-gsub(str_split_fixed(string = unique(RNA_ATAC_master_up_p$site),pattern = "_CA_",2)[,1],pattern = "-",replacement = "_")
-
-sapply(Up_promoters,function(x){HCC1806_cicero[HCC1806_cicero$Peak1==x,]})
-
-
-
+plot_rna_atac_access("ZFP36L1",method="aggregate",select_sites = c("chr14_68924360_68924860_CA_0.4668","chr14_68774546_68796428_CA_1.0000"))
 
 
 RNA_DOWN_short<-data.frame(site=RNA_ATAC_master_down$site,log2FoldChange=RNA_ATAC_master_down$log2fold,qval=RNA_ATAC_master_down$qval,celline=RNA_ATAC_master_down$celline,gene=RNA_ATAC_master_down$gene)
@@ -1131,14 +1188,57 @@ g<-ggarrange(g1,g2,widths=c(8,8),ncol=2,nrow=1)
 ggsave(g,filename = "Output_quartiles_w_examples_big.pdf",width = 16,height = 26.4,units = "cm")
 
 
+```
+
+```{r}
+library(bedr)
+library(stringr)
+library(qval)
+
+IN_all_unique<-read.delim("Combined_celline_unique_sites.bed",header = F)
+peak_un<-paste0(IN_all_unique$V1,":",IN_all_unique$V2,"-",IN_all_unique$V3) 
+peak_un_sort<-bedr.sort.region(peak_un)
+
+s=0
+suc=0
+
+res=data.frame(cl=character(),p=double())
+
+for (file in list.files(path = "./combine_cl/"))
+{
+IN_ps<-read.delim(paste0("./combine_cl/",file),header = F)
+peak_ps<-paste0(IN_ps$V1,":",IN_ps$V2,"-",IN_ps$V3) 
+peak_ps_sort<-bedr.sort.region(peak_ps,verbose=F)
+#intersect<-bedr(input = list(a = peak_ps_sort, b = peak_un_sort), method="intersect",params ="-sorted",verbose=F);
+#print(paste(sep=" ",file,length(intersect),phyper(length(intersect),33099,158041-33099,length(peak_ps),lower.tail = F)))
+cl<-str_split_fixed(file,".uniq.", 2)[1]
+IN_ref<-read.delim(paste0("./ref/",cl,".bed"),header = F)
+peak_ref<-paste0(IN_ref$V1,":",IN_ref$V2,"-",IN_ref$V3) 
+peak_ref_sort<-bedr.sort.region(peak_ref,verbose=F)
+
+intersect_cl<-bedr(input = list(a = peak_ps_sort, b = peak_ref_sort), method="intersect",params ="-sorted",verbose=F);
+print(paste(sep=" ",file,length(intersect_cl),phyper(length(intersect_cl),length(peak_ref_sort),158041-length(peak_ref_sort),length(peak_ps_sort),lower.tail = F)))
+res_cl=data.frame(cl=file,p=phyper(length(intersect_cl),length(peak_ref_sort),158041-length(peak_ref_sort),length(peak_ps_sort),lower.tail = F))
+res=rbind(res,res_cl)
 
 
+}
+
+res$q<-qvalue(res$p, fdr.level=0.01,pi0 = 1)$qvalues
+write.table(res,file="Celline_result.hypregeom.test.txt",quote = F,sep = "\t")
+
+IN_cl_comb<-read.delim("combine_cl.srt.bed",header = F)
+peak_cl_comb<-paste0(IN_cl_comb$V1,":",IN_cl_comb$V2,"-",IN_cl_comb$V3) 
+peak_cl_comb_sort<-bedr.sort.region(peak_cl_comb,verbose=F)
+intersect<-bedr(input = list(a = peak_cl_comb_sort, b = peak_un_sort), method="intersect",params ="-sorted",verbose=F);
+suc=length(intersect)
+s=length(peak_cl_comb)
+phyper(suc,33099,158041-33099,s,lower.tail = F)
 
 
 
 
 ```
-
 
 
 
