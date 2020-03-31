@@ -1883,7 +1883,7 @@ library(stringr)
 library(MASS)
 library(ggplot2)
  library(mixtools)
-
+library(plyr)
 #read in combeded res
 combeded_dataset<-readRDS("coembed_final_standard_norm_singlet_filt.rds")
 #find all markers
@@ -1895,18 +1895,76 @@ annot_temp$annot<-gsub("SUM149PT","SUM",annot_temp$annot)
 
 Idents(object = combeded_dataset)<-annot_temp
 
+combeded_dataset[["annot_corr"]] <- Idents(object = combeded_dataset)
+
+
+sep<-combeded_dataset[["annot_corr"]]
+#with prec it was 2,3
+cell<-str_split_fixed(sep[,1], "_", 3)[,1]
+cond<-str_split_fixed(sep[,1], "_", 3)[,2]
+combeded_dataset$cell<-cell
+combeded_dataset$treat<-cond
+
 CCA_UMAP<-read.delim("COEMBED_res_CCA_results.UMAP.dims",header = F,row.names = 1)
 colnames(CCA_UMAP) <- paste0("umap_", 1:2)
 row.names(CCA_UMAP)<-gsub(pattern="\\.",replacement = "-",x=row.names(CCA_UMAP))
 combeded_dataset[["umap"]]<-CreateDimReducObject(embeddings =as.matrix(CCA_UMAP),key = "umap_",assay = DefaultAssay(combeded_dataset))
+
+test<-as.factor(combeded_dataset[["orig.ident"]]$orig.ident)
+assay_val<-revalue(test, c("ScRNA_P1"="scRNA-seq", "SeuratProject"="sciATAC-seq"))
+assay<-combeded_dataset[["orig.ident"]]
+assay$orig.ident<-assay_val
+combeded_dataset[["assay"]]<-assay
+
+#Coembedded feature plot
+pdf(file="coembed_cds_KRT14_feature_split.pdf",width=10,height = 5)
+FeaturePlot(combeded_dataset, features = "KRT14", cols = c("grey", "red"),split.by ="assay", reduction = "umap")
+dev.off()
 
 #Coembedded feature plot
 pdf(file="coembed_cds_KRT14_feature.pdf",width=5,height = 5)
 FeaturePlot(combeded_dataset, features = "KRT14", cols = c("grey", "red"),reduction = "umap")
 dev.off()
 
+#Coembedded feature plot
+pdf(file="coembed_cds_EGR1_feature_split.pdf",width=10,height = 5)
+FeaturePlot(combeded_dataset, features = "EGR1", cols = c("grey", "red"),split.by ="assay", reduction = "umap")
+dev.off()
+
+
 pdf(file="coembed_cds_EGR1_feature.pdf",width=5,height = 5)
 FeaturePlot(combeded_dataset, features = "EGR1", cols = c("grey", "red"),reduction = "umap")
+dev.off()
+
+
+#Coembedded feature plot
+pdf(file="coembed_cds_VIM_feature_split.pdf",width=10,height = 5)
+FeaturePlot(combeded_dataset, features = "VIM", cols = c("grey", "red"),split.by ="assay", reduction = "umap")
+dev.off()
+
+
+pdf(file="coembed_cds_VIM_feature.pdf",width=5,height = 5)
+FeaturePlot(combeded_dataset, features = "VIM", cols = c("grey", "red"),reduction = "umap")
+dev.off()
+
+#Coembedded feature plot
+pdf(file="coembed_cds_KRT17_feature_split.pdf",width=10,height = 5)
+FeaturePlot(combeded_dataset, features = "KRT17", cols = c("grey", "red"),split.by ="assay", reduction = "umap")
+dev.off()
+
+
+pdf(file="coembed_cds_KRT17_feature.pdf",width=5,height = 5)
+FeaturePlot(combeded_dataset, features = "KRT17", cols = c("grey", "red"),reduction = "umap")
+dev.off()
+
+#Coembedded feature plot
+pdf(file="coembed_cds_MMP1_feature_split.pdf",width=10,height = 5)
+FeaturePlot(combeded_dataset, features = "MMP1", cols = c("grey", "red"),split.by ="assay", reduction = "umap")
+dev.off()
+
+
+pdf(file="coembed_cds_MMP1_feature.pdf",width=5,height = 5)
+FeaturePlot(combeded_dataset, features = "MMP1", cols = c("grey", "red"),reduction = "umap")
 dev.off()
 
 # find markers for every cluster compared to all remaining cells, report only the positive ones
