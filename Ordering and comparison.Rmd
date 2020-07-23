@@ -158,7 +158,7 @@ pseudotime<-as.data.frame(pData(cds)$Pseudotime)
 row.names(pseudotime)<-row.names(pData(cds))
 
 
-write.table(as.matrix(pseudotime),file="./pseudotime_final_ATAC_RNA.val",col.names=F,row.names=T,sep="\t",quote=FALSE)
+write.table(as.matrix(pseudotime),file="./RNA_ATAC_pseudotime_final",col.names=F,row.names=T,sep="\t",quote=FALSE)
 
 ```
 
@@ -310,7 +310,7 @@ pseudotime<-as.data.frame(pData(cds)$Pseudotime)
 row.names(pseudotime)<-row.names(pData(cds))
 
 
-write.table(as.matrix(pseudotime),file="./RNA_pseudotime.val",col.names=F,row.names=T,sep="\t",quote=FALSE)
+write.table(as.matrix(pseudotime),file="./RNA_pseudotime_final.val",col.names=F,row.names=T,sep="\t",quote=FALSE)
 
 ```
 
@@ -450,8 +450,8 @@ library(ggpubr)
 #ATAC<-read.delim(file="ATAC.val",header = F)
 #ordering where branches are chosen
 ATAC<-read.delim(file="ATAC_pseudotime_final.val",header = F)
-RNA<-read.delim(file="RNA_pseudotime.val",header = F)
-ATAC_RNA<-read.delim(file="./pseudotime_final_ATAC_RNA.val",header = F)
+RNA<-read.delim(file="RNA_pseudotime_final.val",header = F)
+ATAC_RNA<-read.delim(file="./RNA_ATAC_pseudotime_final.val",header = F)
 annot<-read.delim(file="180227_180214.U54.merged_new.annot",header = F)
 RNA_annot<-read.delim(file="RNA_orig.annot",header = F)
 cells<-str_split_fixed(annot$V2, "_", 3)[,1]

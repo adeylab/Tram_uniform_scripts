@@ -1,0 +1,285 @@
+---
+title: "Cross_referenecing_TFs_w_sites"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+
+#this is the script to look at what motifs are present at the sites linked to the promoter at KRT17 and EGR1
+```{r}
+# load dependencies
+library(chromVAR)
+library(motifmatchr)
+library(SummarizedExperiment)
+library(Matrix)
+library(BiocParallel)
+register(SnowParam(8))
+library("chromVARmotifs")
+# load motifs & genome for hum
+library(BSgenome.Hsapiens.UCSC.hg38)
+data("human_pwms_v2")
+library(regioneR)
+library(Seurat)
+library(cowplot)
+library(stringr)
+# load the library
+library(forcats)
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+
+#KRT17 sites
+KRT17<-c("chr17_41602516_41633913","chr17_41885595_41895440","chr17_41576722_41587247")
+
+K<-as.data.frame(str_split_fixed(KRT17, "_", 3))
+names(K)<-c("chr","start","end")
+#EGR1 sites
+EGR1<-c("chr5_138463941_138470738","chr5_138022803_138036435","chr5_138110478_138112415")
+E<-as.data.frame(str_split_fixed(EGR1, "_", 3))
+names(E)<-c("chr","start","end")
+
+peaks <- toGRanges(K)
+# Make a set of peaks
+
+motifs<-human_pwms_v2
+
+# Get motif matches for example motifs in peaks 
+motif_ix <- matchMotifs(human_pwms_v2, peaks, genome = BSgenome.Hsapiens.UCSC.hg38)
+motifMatches(motif_ix) # Extract matches matrix from result
+## 3 x 3 sparse Matrix of class "lgCMatrix"
+##      MA0599.1_KLF5 MA0107.1_RELA MA0137.3_STAT1
+## [1,]             |             |              .
+## [2,]             |             .              |
+## [3,]             |             .              |
+# Get motif positions within peaks for example motifs in peaks 
+motif_pos <- matchMotifs(motifs, peaks, genome = BSgenome.Hsapiens.UCSC.hg38, out = "positions") 
+motif_ix_scores <- matchMotifs(motifs, peaks, genome = BSgenome.Hsapiens.UCSC.hg38, out = "scores")
+
+
+write.table(t(as.data.frame(motifCounts(motif_ix_scores))),file = "KRT17res.matrix",sep = "\t",quote = F,row.names = T,col.names = T)
+
+res<-as.data.frame(as.matrix(motifCounts(motif_ix_scores)))
+row.names(res)<-KRT17
+genes_up<-read.delim("RNA_ATAC_master_list_up.txt")
+
+chr17_41885595_41895440<-str_split_fixed(names(res[2,res[2,]>1]),"_",4)[,3]
+chr17_41602516_41633913<-str_split_fixed(names(res[1,res[1,]>1]),"_",4)[,3]
+chr17_41576722_41587247<-str_split_fixed(names(res[3,res[3,]>1]),"_",4)[,3]
+
+
+
+
+#KRT 17 order by tf
+KRT17_res<-as.data.frame(t(res))
+
+p1<-ggplot(KRT17_res[KRT17_res$chr17_41602516_41633913>1,],aes(x=chr17_41602516_41633913))+geom_density()+theme_classic()+geom_vline(xintercept = 17)+ scale_x_continuous(trans='log10')
+p2<-ggplot(KRT17_res[KRT17_res$chr17_41885595_41895440>1,],aes(x=chr17_41885595_41895440))+geom_density()+theme_classic()+geom_vline(xintercept = c(3,6,8))+scale_x_continuous(trans='log10')
+p3<-ggplot(KRT17_res[KRT17_res$chr17_41576722_41587247>1,],aes(x=chr17_41576722_41587247))+geom_density()+theme_classic()+geom_vline(xintercept = c(7,6))+scale_x_continuous(trans='log10')
+
+P_all<-ggarrange(plotlist = list(p1,p2,p3),ncol = 1, nrow = 3,align = "v")
+
+
+
+
+#lets see distributions of scores
+annot_ch_row1<-read.table(file = "~/Work/M2CH/M2CH/correct.row2.annot.txt",header=F) 
+annot_ch_row2<-read.table("~/Work/M2CH/M2CH/STAMP_annot.txt",header=F)
+merged_KRT17_res<-merge(KRT17_res,annot_ch_row1,by.x="row.names",by.y='V1')
+row.names(merged_KRT17_res)<-merged_KRT17_res$Row.names
+merged_KRT17_res$Row.names<-NULL
+merged_KRT17_res<-merge(merged_KRT17_res,annot_ch_row2,by.x="row.names",by.y='V1')
+
+First<-merged_KRT17_res[order(merged_KRT17_res$chr17_41602516_41633913,decreasing = T),]
+First_select<-First[First$chr17_41602516_41633913>1,]
+chr17_41602516_41633913_category<-aggregate(First_select[,2:4],list(First_select$V2.x),mean)
+
+#just to select top 5
+plot_PR<-chr17_41602516_41633913_category[chr17_41602516_41633913_category$chr17_41602516_41633913>10.9,]
+
+
+
+p1<- (plot_PR %>%
+   mutate(name = fct_reorder(Group.1, chr17_41602516_41633913)) %>%
+   ggplot(aes(x=name,y=chr17_41602516_41633913))+geom_bar(stat="identity")+theme_classic()+coord_flip())
+
+Second<-merged_KRT17_res[order(merged_KRT17_res$chr17_41885595_41895440,decreasing = T),]
+Second_select<-Second[Second$chr17_41885595_41895440>1,]
+chr17_41885595_41895440_category<-aggregate(Second_select[,2:4],list(Second_select$V2.x),mean)
+#just to select top 5
+plot_RE1<-chr17_41885595_41895440_category[chr17_41885595_41895440_category$chr17_41885595_41895440>7,]
+p2<-(plot_RE1 %>%
+   mutate(name = fct_reorder(Group.1, chr17_41885595_41895440)) %>%
+   ggplot(aes(x=name,y=chr17_41885595_41895440))+geom_bar(stat="identity")+theme_classic()+coord_flip())
+
+Third<-merged_KRT17_res[order(merged_KRT17_res$chr17_41576722_41587247,decreasing = T),]
+Third_select<-Second[Third$chr17_41576722_41587247>1,]
+chr17_41576722_41587247_category<-aggregate(Third_select[,2:4],list(Third_select$V2.x),mean)
+plot_RE2<-chr17_41576722_41587247_category[chr17_41576722_41587247_category$chr17_41576722_41587247>3.7,]
+p3<-(plot_RE2 %>%
+   mutate(name = fct_reorder(Group.1, chr17_41576722_41587247)) %>%
+   ggplot(aes(x=name,y=chr17_41576722_41587247))+geom_bar(stat="identity")+theme_classic()+coord_flip())
+
+library(ggpubr)
+P_all<-ggarrange(plotlist = list(p1,p2,p3),ncol = 1, nrow = 3,align = "v")
+
+
+
+#the are the TFs of RE2
+pass_chr17_41576722_41587247<- genes_up$gene[na.omit(match(chr17_41576722_41587247,genes_up$gene))]
+#this one is more accessible in HCC1143G, MDA primarily
+hmm<-lapply(pass_chr17_41576722_41587247,function(x){genes_up[x==genes_up$gene,]})
+
+#seems like KLF6 is HCC1143G,MDA
+#ID3 for HCC1143G
+
+#what about RE1 HCC1143 G/S and SUM
+pass_chr17_41885595_41895440<-genes_up$gene[na.omit(match(chr17_41885595_41895440,genes_up$gene))]
+hmm2<-lapply(pass_chr17_41885595_41895440,function(x){genes_up[x==genes_up$gene,]})
+#SOX4 for HCC1143G sum, SNAI2 SUM, HCC1143 ID3
+
+#finally Promoter region
+
+pass_chr17_41602516_41633913<- genes_up$gene[na.omit(match(chr17_41602516_41633913,genes_up$gene))]
+lapply(pass_chr17_41602516_41633913,function(x){genes_up[x==genes_up$gene,]})
+#KLF6 is the interesing one in MDA468 here
+
+
+RNA.data<-readRDS("scRNA_singlet_filt.rds")
+p<-VlnPlot(RNA.data, features = c("SNAI2","SOX4","ID3", "KLF6"))
+
+pdf(file="All_interesting_ones_KRT17.pdf",width=10,height = 10)
+VlnPlot(RNA.data, pt.size=0  ,features = c("SNAI2","SOX4","ID3", "KLF6"))
+dev.off()
+
+plots <- VlnPlot(RNA.data, features = c("SNAI2","SOX4","ID3", "KLF6"), split.by = "treat", group.by = "cell", pt.size = 0, combine = TRUE)
+
+secondary<-str_split_fixed(RNA.data[["annot"]]$annot,"_",2)
+colnames(secondary)<-c("cell","treat")
+rownames(secondary)<-rownames(RNA.data[["annot"]])
+RNA.data<-AddMetaData(RNA.data,secondary,c("cell","treat"))
+
+plots <- VlnPlot(RNA.data, features = c("KDM1A"), split.by = "treat", group.by = "cell", pt.size = 0, combine = TRUE)
+
+
+pdf(file="All_interesting_ones_KRT17_split.pdf",width=10,height = 10)
+plots
+dev.off()
+
+
+
+#NOW EGR1
+E<-as.data.frame(str_split_fixed(EGR1, "_", 3))
+names(E)<-c("chr","start","end")
+
+peaks <- toGRanges(E)
+# Make a set of peaks
+
+motifs<-human_pwms_v2
+
+# Get motif matches for example motifs in peaks 
+motif_ix <- matchMotifs(human_pwms_v2, peaks, genome = BSgenome.Hsapiens.UCSC.hg38)
+motifMatches(motif_ix) # Extract matches matrix from result
+## 3 x 3 sparse Matrix of class "lgCMatrix"
+##      MA0599.1_KLF5 MA0107.1_RELA MA0137.3_STAT1
+## [1,]             |             |              .
+## [2,]             |             .              |
+## [3,]             |             .              |
+# Get motif positions within peaks for example motifs in peaks 
+motif_pos <- matchMotifs(motifs, peaks, genome = BSgenome.Hsapiens.UCSC.hg38, out = "positions") 
+motif_ix_scores <- matchMotifs(motifs, peaks, genome = BSgenome.Hsapiens.UCSC.hg38, out = "scores")
+write.table(t(as.data.frame(motifCounts(motif_ix_scores))),file = "EGR1.res.matrix",sep = "\t",quote = F,row.names = T,col.names = T)
+
+res<-as.data.frame(as.matrix(motifCounts(motif_ix_scores)))
+row.names(res)<-EGR1
+genes_up<-read.delim("RNA_ATAC_master_list_up.txt")
+genes_down<-read.delim("RNA_ATAC_master_list_down.txt")
+
+
+chr5_138022803_138036435<-str_split_fixed(names(res[2,res[2,]>1]),"_",4)[,3]
+chr5_138463941_138470738<-str_split_fixed(names(res[1,res[1,]>1]),"_",4)[,3]
+chr5_138110478_138112415<-str_split_fixed(names(res[3,res[3,]>1]),"_",4)[,3]
+
+
+#EGR1 order by tf
+EGR1_res<-as.data.frame(t(res))
+
+
+
+p1<-ggplot(EGR1_res[EGR1_res$chr5_138022803_138036435>1,],aes(x=chr5_138022803_138036435))+geom_density()+theme_classic()+geom_vline(xintercept = c(9,2,7,3,3))#+ scale_x_continuous(trans='log10')
+p2<-ggplot(EGR1_res[EGR1_res$chr5_138463941_138470738>1,],aes(x=chr5_138463941_138470738))+geom_density()+theme_classic()+geom_vline(xintercept = c(14,6))#+scale_x_continuous(trans='log10')
+p3<-ggplot(EGR1_res[EGR1_res$chr5_138110478_138112415>1,],aes(x=chr5_138110478_138112415))+geom_density()+theme_classic()+geom_vline(xintercept = c(2,5))#+scale_x_continuous(trans='log10')
+P_all<-ggarrange(plotlist = list(p1,p2,p3),ncol = 1, nrow = 3,align = "v")
+
+
+
+#lets look at RE1 I think for this it should be TFs going down 
+pass_chr5_138022803_138036435<- genes_down$gene[na.omit(match(chr5_138022803_138036435,genes_down$gene))]
+#this one is less accessible in MDAMB468, SUM149PT primarily
+RE1<-lapply(pass_chr5_138022803_138036435,function(x){genes_down[x==genes_down$gene,]})
+#HMGA1,HMGA2, EGR1, FOSL1, FOXM1
+
+EGR1_res[grep(pattern = "HMGA1",row.names(EGR1_res)),]
+EGR1_res[grep(pattern = "HMGA2",row.names(EGR1_res)),]
+EGR1_res[grep(pattern = "EGR1",row.names(EGR1_res)),]
+EGR1_res[grep(pattern = "FOSL1",row.names(EGR1_res)),]
+EGR1_res[grep(pattern = "FOXM1",row.names(EGR1_res)),]
+
+#which of the KLFs are DE?
+#only KLF 6 <- genes_up[grep(pattern="KLF",genes_up$gene),]
+EGR1_res[grep(pattern = "KLF5",row.names(EGR1_res)),] #is 2
+EGR1_res[grep(pattern = "KLF1",row.names(EGR1_res)),] #is 5
+
+
+#let us look at the promoter then
+pass_chr5_138463941_138470738<- genes_down$gene[na.omit(match(chr5_138463941_138470738,genes_down$gene))]
+#again  is less accessible in MDAMB468, SUM149PT primarily
+PR<-lapply(pass_chr5_138463941_138470738,function(x){genes_down[x==genes_down$gene,]})
+#EGR1 and DNMT1 
+
+EGR1_res[grep(pattern = "EGR1",row.names(EGR1_res)),]
+EGR1_res[grep(pattern = "DNMT1",row.names(EGR1_res)),]
+
+
+#finally RE2 is one of the few ones more accessible in MDAMB468
+pass_chr5_138110478_138112415<- genes_up$gene[na.omit(match(chr5_138110478_138112415,genes_up$gene))]
+#again  is less accessible in MDAMB468, SUM149PT primarily
+RE2<-lapply(pass_chr5_138110478_138112415,function(x){genes_up[x==genes_up$gene,]})
+#KLF5 probably closest KLF6
+EGR1_res[grep(pattern = "KLF6",row.names(EGR1_res)),]
+
+
+
+plots <- VlnPlot(RNA.data, features = c("HMGA1","HMGA2","EGR1","FOSL1", "FOXM1","DNMT1","LMO2"), split.by = "treat", group.by = "cell", pt.size = 0, combine = TRUE)
+#CombinePlots(plots = plots, ncol = 2)
+pdf(file="All_interesting_ones_EGR1.pdf",width=10,height = 10)
+VlnPlot(RNA.data, pt.size=0  ,features = c("HMGA1","EGR1","FOSL1", "FOXM1","DNMT1"))
+dev.off()
+pdf(file="All_interesting_ones_EGR1_split.pdf",width=10,height = 10)
+plots
+dev.off()
+
+
+
+
+#plot genes in the vicinity of linked sites to see trends
+
+EGR1_genes<-read.delim("file:///C:/Users/thoor/Downloads/EGR1_region_gene_names.txt",header = F)
+KRT17_genes<-read.delim("file:///C:/Users/thoor/Downloads/KRT17_region_gene_names.txt",header=F)
+
+plots <- VlnPlot(RNA.data, features = EGR1_genes$V1, split.by = "treat", group.by = "cell", pt.size = 0, combine = TRUE)
+plots
+
+plots <- VlnPlot(RNA.data, features = KRT17_genes$V1, split.by = "treat", group.by = "cell", pt.size = 0, combine = TRUE)
+
+pdf("KRT17_all_genes_long.pdf",height=100,width=50)
+plots
+dev.off()
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

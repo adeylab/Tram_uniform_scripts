@@ -1075,7 +1075,17 @@ final_ordered_difference_up_ls_sp<-res_comparison[order(res_comparison$differenc
 RNA_ATAC_master_cl_added_up[RNA_ATAC_master_cl_added_up$site=="chr14_68924360_68924860_CA_0.4668",]
 RNA_ATAC_master_cl_added_up[RNA_ATAC_master_cl_added_up$site=="chr1_153150846_153151346_CA_0.1645",]
 RNA_ATAC_master_cl_added_up[RNA_ATAC_master_cl_added_up$site=="chr11_65675988_65676488_CA_-0.1524",]
-#from here not hte cl specific coaccess 
+
+
+
+
+
+
+
+
+
+
+#from here not the cl specific coaccess 
 
 
 plot_rna_atac_access("ZFP36L1",method="aggregate",select_sites = c("chr14_68924360_68924860_CA_0.4668","chr14_68774546_68796428_CA_1.0000"))
@@ -1124,7 +1134,9 @@ for (i in levels(RNA_ATAC_master_up$site) ){
 }
 
 final_ordered_difference_up<-res_comparison[order(res_comparison$difference_log2),]
-
+#how many
+dim(final_ordered_difference_up[final_ordered_difference_up$difference_log2>1 & final_ordered_difference_up$difference_corr>1,])
+123
 RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr10_3689885_3690385_CA_0.1836",]
 RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr8_123877943_123883529_CA_-0.3880",]
 RNA_ATAC_master_up[RNA_ATAC_master_up$site=="chr1_153081716_153082216_CA_0.4687",]
@@ -1158,7 +1170,7 @@ for (i in levels(RNA_ATAC_master_down$site) ){
 
 
 final_ordered_difference_down<-res_comparison[order(res_comparison$difference_log2),]
-
+dim(final_ordered_difference_down[final_ordered_difference_down$difference_log2>1 & final_ordered_difference_down$difference_corr>1,])
 RNA_ATAC_master_down[RNA_ATAC_master_down$site=="chr11_65851061_65860777_CA_0.2054",]
 RNA_ATAC_master_down[RNA_ATAC_master_down$site=="chr12_2613672_2614172_CA_0.6276",]
 RNA_ATAC_master_down[RNA_ATAC_master_down$site=="chr20_5341973_5342473_CA_0.3468",]
@@ -1190,10 +1202,12 @@ ggsave(g,filename = "Output_quartiles_w_examples_big.pdf",width = 16,height = 26
 
 ```
 
+Enrichment of cell line specific sites
+
 ```{r}
 library(bedr)
 library(stringr)
-library(qval)
+library(qvalue)
 
 IN_all_unique<-read.delim("Combined_celline_unique_sites.bed",header = F)
 peak_un<-paste0(IN_all_unique$V1,":",IN_all_unique$V2,"-",IN_all_unique$V3) 
@@ -1202,30 +1216,39 @@ peak_un_sort<-bedr.sort.region(peak_un)
 s=0
 suc=0
 
-res=data.frame(cl=character(),p=double())
-
+#this is when we test just within the cl specific sites
+res_within_cl=data.frame(cl=character(),p=double())
+#this is when we test within all unique cl sites
+res_between_cl=data.frame(cl=character(),p=double())
 for (file in list.files(path = "./combine_cl/"))
 {
+print("This is for within cl sites")
 IN_ps<-read.delim(paste0("./combine_cl/",file),header = F)
 peak_ps<-paste0(IN_ps$V1,":",IN_ps$V2,"-",IN_ps$V3) 
 peak_ps_sort<-bedr.sort.region(peak_ps,verbose=F)
-#intersect<-bedr(input = list(a = peak_ps_sort, b = peak_un_sort), method="intersect",params ="-sorted",verbose=F);
-#print(paste(sep=" ",file,length(intersect),phyper(length(intersect),33099,158041-33099,length(peak_ps),lower.tail = F)))
 cl<-str_split_fixed(file,".uniq.", 2)[1]
 IN_ref<-read.delim(paste0("./ref/",cl,".bed"),header = F)
 peak_ref<-paste0(IN_ref$V1,":",IN_ref$V2,"-",IN_ref$V3) 
 peak_ref_sort<-bedr.sort.region(peak_ref,verbose=F)
 
 intersect_cl<-bedr(input = list(a = peak_ps_sort, b = peak_ref_sort), method="intersect",params ="-sorted",verbose=F);
-print(paste(sep=" ",file,length(intersect_cl),phyper(length(intersect_cl),length(peak_ref_sort),158041-length(peak_ref_sort),length(peak_ps_sort),lower.tail = F)))
+print(paste(sep=" ",file,length(intersect_cl),length(peak_ref_sort),158041-length(peak_ref_sort),length(peak_ps_sort),phyper(length(intersect_cl),length(peak_ref_sort),158041-length(peak_ref_sort),length(peak_ps_sort),lower.tail = F)))
 res_cl=data.frame(cl=file,p=phyper(length(intersect_cl),length(peak_ref_sort),158041-length(peak_ref_sort),length(peak_ps_sort),lower.tail = F))
-res=rbind(res,res_cl)
+res_within_cl=rbind(res_within_cl,res_cl)
 
-
+#now between
+print("This is for all cl sites")
+intersect_b_cl<-bedr(input = list(a = peak_ps_sort, b = peak_un_sort), method="intersect",params ="-sorted",verbose=F);
+print(paste(sep=" ",file,length(intersect_b_cl),33099,158041-33099,length(peak_ps),phyper(length(intersect_b_cl),33099,158041-33099,length(peak_ps),lower.tail = F)))
+res_b_cl=data.frame(cl=file,p=phyper(length(intersect_b_cl),33099,158041-33099,length(peak_ps),lower.tail = F))
+res_between_cl=rbind(res_between_cl,res_b_cl)
 }
 
-res$q<-qvalue(res$p, fdr.level=0.01,pi0 = 1)$qvalues
-write.table(res,file="Celline_result.hypregeom.test.txt",quote = F,sep = "\t")
+res_within_cl$q<-qvalue(res_within_cl$p, fdr.level=0.01,pi0 = 1)$qvalues
+res_between_cl$q<-qvalue(res_between_cl$p, fdr.level=0.01,pi0 = 1)$qvalues
+write.table(res_within_cl,file="Celline_result.hypregeom.test.w.cl.txt",quote = F,sep = "\t")
+write.table(res_between_cl,file="Celline_result.hypregeom.test.b.cl.txt",quote = F,sep = "\t")
+
 
 IN_cl_comb<-read.delim("combine_cl.srt.bed",header = F)
 peak_cl_comb<-paste0(IN_cl_comb$V1,":",IN_cl_comb$V2,"-",IN_cl_comb$V3) 

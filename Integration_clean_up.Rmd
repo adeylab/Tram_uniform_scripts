@@ -1653,21 +1653,15 @@ pdf(file="Plot_singlet_filt_umap.pdf")
 DimPlot(RNA.data, label = TRUE,group.by = "annot") + NoLegend()
 dev.off()
 
-
-
-
-
 ATAC.datam <-read.table("180227_180214.U54.merged.bbrd.q10.5k.filt.500.counts.filt_1000_10.matrix",sep="\t",header=T)
 
 rn<-str_split_fixed(row.names(ATAC.datam), "_", 3)
 rn<-paste0(rn[,1],":",rn[,2],"-",rn[,3])
 row.names(ATAC.datam)<-rn
-#read cicero annot?
-#ATAC.data<-readRDS("cicero.gene_acitivity_matrixunnorm.rds")
-
-
-#make simpler gene activity matrix
-ATAC.data <- CreateGeneActivityMatrix(peak.matrix = ATAC.datam,annotation.file ="Homo_sapiens.GRCh38.86.gtf", seq.levels = c(1:22, "X", "Y"), upstream = 2000,verbose = TRUE)
+#read cicero matrix
+ATAC.data<-readRDS("cicero.gene_acitivity_matrixunnorm.rds")
+#or make simpler gene activity matrix
+#ATAC.data <- CreateGeneActivityMatrix(peak.matrix = ATAC.datam,annotation.file ="Homo_sapiens.GRCh38.86.gtf", seq.levels = c(1:22, "X", "Y"), upstream = 2000,verbose = TRUE)
 
 ATAC.annot<-read.table("./180227_180214.U54.merged_new.annot",header=F)
 row.names(ATAC.annot)<-ATAC.annot$V1
@@ -1739,11 +1733,14 @@ p2
 dev.off()
 #SelectIntegrationFeatures(list(all.atac, all.rna)
 DefaultAssay(all.atac) <- "ACTIVITY"
-transfer.anchors <- FindTransferAnchors(reference = all.rna, query = all.atac, features = VariableFeatures(object = all.rna), reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
-#transfer.anchors <- FindTransferAnchors(reference =all.atac, query = all.rna, features = VariableFeatures(object = all.atac), reference.assay = "ACTIVITY", query.assay =  "RNA", reduction = "cca")
+#transfer.anchors <- FindTransferAnchors(reference = all.rna, query = all.atac, features = VariableFeatures(object = all.rna), reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
+#ended up using atac and RNA features
+transfer.anchors <- FindTransferAnchors(reference = all.rna, query = all.atac, features = SelectIntegrationFeatures(list(all.atac, all.rna)), reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
+#transfer.anchors <- FindTransferAnchors(reference =all.atac, query = all.rna, features = SelectIntegrationFeatures(list(all.atac, all.rna), reference.assay = "ACTIVITY", query.assay =  "RNA", reduction = "cca")
 
-
-celltype.predictions <- TransferData(anchorset = transfer.anchors, refdata = all.rna$annot, weight.reduction = all.atac[["cistopic"]])
+#and lsi instead of cistopic weighting
+#celltype.predictions <- TransferData(anchorset = transfer.anchors, refdata = all.rna$annot, weight.reduction = all.atac[["cistopic"]])
+celltype.predictions <- TransferData(anchorset = transfer.anchors, refdata = all.rna$annot, weight.reduction = all.atac[["lsi"]])
 all.atac <- AddMetaData(all.atac, metadata = celltype.predictions)
 
 pdf(file="Pred_singlet_filt.pdf")
@@ -1805,6 +1802,7 @@ CombinePlots(plots = list(plot1, plot2))
 dev.off()
 
 
+#in the end we ended using the integrated features
 refdata <- GetAssayData(all.rna, assay = "RNA", slot = "data")[genes.use, ]
 
 #refdata <- GetAssayData(all.atac, assay = "ACTIVITY", slot = "data")[genes.use, ]
@@ -1812,9 +1810,9 @@ refdata <- GetAssayData(all.rna, assay = "RNA", slot = "data")[genes.use, ]
 
 
 # refdata (input) contains a scRNA-seq expression matrix for the scRNA-seq cells.  imputation
-# (output) will contain an imputed scRNA-seq matrix for each of the ATAC cells
+# (output) will contain an imputed scRNA-seq matrix for each of the ATAC cells, we ended up using the lsi weights
 imputation <- TransferData(anchorset = transfer.anchors, refdata = refdata, weight.reduction = all.atac[["lsi"]])
-#imputation <- TransferData(anchorset = transfer.anchors, refdata = refdata, weight.reduction = all.rna[["pca"]])
+#imputation <- TransferData(anchorset = transfer.anchors, refdata = refdata, weight.reduction = all.rna[["cistopic"]])
 #
 # this line adds the imputed data matrix to the all.atac object
 all.atac[["RNA"]] <- imputation
@@ -1885,7 +1883,8 @@ library(ggplot2)
  library(mixtools)
 library(plyr)
 #read in combeded res
-combeded_dataset<-readRDS("coembed_final_standard_norm_singlet_filt.rds")
+#combeded_dataset<-readRDS("coembed_final_standard_norm_singlet_filt.rds")
+combeded_dataset<-readRDS("coembed1_singlet_filt.rds")
 #find all markers
 
 annot_temp<-combeded_dataset[["annot"]]
